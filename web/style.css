@@ -20,6 +20,10 @@ section {
 }
 .connection { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; }
 .connection label { margin: 0; }
+.button-row { display: flex; flex-wrap: wrap; gap: .55rem; }
+details { margin-top: .85rem; }
+summary { cursor: pointer; color: #185b50; }
+#kit-version { overflow-wrap: anywhere; }
 .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: .9rem; }
 label { display: block; margin: .6rem 0; font-size: .87rem; font-weight: 600; }
 label span, #device { color: #536760; }

@@ -10,8 +10,19 @@ The ZIP includes the Doom 1.9 shareware data. Use the matching EXE and BIN toget
 ## Browser
 
 Open the [hosted iPAQ tools](https://mblsha.github.io/ipaq-h3970/) in
-Chromium on the computer with the iPAQ attached. Close any other
-ActiveSync session using the dock before connecting.
+Chromium with the native dock attached. Close any other ActiveSync or
+serial session using the dock.
+
+- With WinCE running, choose **Install and start Doom** and approve the
+  WinCE USB connection if prompted. The page selects a published kit,
+  verifies the download and WinCE read-back, and starts the RAM launcher.
+- When Doom appears, choose **Connect Linux** and grant Web Serial access
+  on the same cable. **Enable audio** and **Disable audio** restart the demo
+  when the setting changes. **Reset to WinCE** reboots to stock WinCE and
+  may show the Welcome screen. If Linux USB stops responding, reconnect
+  the cable and choose **Connect Linux** again.
+- Use **Connect WinCE** for **Dump ROM** or to stage a different kit.
+  The ROM image is saved by the browser on your computer.
 
 To run the page locally, build the static site with Rust's `wasm32-unknown-unknown` target, Python
 3.11+, and ARM GNU Embedded GCC and binutils.
@@ -22,11 +33,11 @@ python3 -m http.server --bind 127.0.0.1 --directory .build/web 8000
 ```
 
 For the local build, open `http://127.0.0.1:8000` in Chromium.
-Select **Connect iPAQ** and choose WinCE USB Sync
-(`049f:0003`). The page confirms stock WinCE build 11171 before enabling
-**Dump ROM** and **Upload and verify**. The 48 MiB ROM backup and the two
-Doom kit files stay on your computer and the handheld. The browser and
-the iPAQ both show progress. The browser's uploader leaves the kit in
+Use **Use your own kit** to transfer local files. Run
+`GH_REPO=mblsha/ipaq-h3970 python3 web/stage-kit.py .build/web`
+to stage the published kit locally using an authenticated `gh` CLI.
+WinCE operations require stock build 11171. Both the browser and the
+iPAQ show transfer progress. Manual upload stages files in
 **My Documents** and leaves WinCE running.
 
 ## Native tools

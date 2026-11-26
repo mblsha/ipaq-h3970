@@ -9,6 +9,8 @@ on:
       - "web/**"
       - "wince/**"
   workflow_dispatch:
+  release:
+    types: [published]
 
 concurrency:
   group: github-pages
@@ -24,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: main
           persist-credentials: false
       - uses: actions/configure-pages@v5
       - name: Install Arm cross-compiler
@@ -43,6 +46,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.94.1
         run: make web
+      - name: Stage the published Doom kit
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 web/stage-kit.py .build/web
       - uses: actions/upload-pages-artifact@v4
         with:
           path: .build/web

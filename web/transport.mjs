@@ -106,15 +106,23 @@ export class ActiveSync {
         if (!this.active) throw new Error("USB session closed");
     }
 
-    async close() {
+    async close({boot = false} = {}) {
         this.active = false;
         clearInterval(this.timer);
         clearInterval(this.heartbeat);
         if (this.device.opened) {
-            if (this.claimed) {
-                await withTimeout(this.dtr(0), 1500, "USB DTR release timed out").catch(() => {});
+            try {
+                if (this.claimed) {
+                    const dtr = withTimeout(this.dtr(0), 1500, "USB DTR release timed out");
+                    if (boot) {
+                        if ((await dtr).status !== "ok") throw new Error("WinCE USB DTR release failed");
+                    } else {
+                        await dtr.catch(() => {});
+                    }
+                }
+            } finally {
+                await withTimeout(this.device.close(), 2000, "USB close timed out").catch(() => {});
             }
-            await withTimeout(this.device.close(), 2000, "USB close timed out").catch(() => {});
         }
     }
 

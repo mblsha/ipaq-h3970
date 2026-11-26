@@ -161,12 +161,12 @@ export async function dumpRom(rapi, report, {start = 0, size = ROM_SIZE} = {}) {
     });
 }
 
-export async function uploadDoom(rapi, image, launcher, report) {
+export async function uploadDoom(rapi, image, launcher, report, stem = "DOOMUSB") {
     const total = image.length + launcher.length;
     if (!image.length || !launcher.length || total > MAX_KIT_SIZE) throw new Error("Invalid Doom kit size");
     const files = [
-        [DOCUMENTS + "\\DOOMUSB.BIN", image],
-        [DOCUMENTS + "\\DOOMUSB.EXE", launcher],
+        [DOCUMENTS + "\\" + stem + ".BIN", image],
+        [DOCUMENTS + "\\" + stem + ".EXE", launcher],
     ];
     const existing = await rapi.list();
     for (const [path, bytes] of files) {
