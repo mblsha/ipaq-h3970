@@ -8,7 +8,8 @@ if [ -w "$udc/soft_connect" ]; then
         /bin/busybox sleep 1
     done
     if printf 'disconnect\n' > "$udc/soft_connect"; then
-        /bin/busybox sleep 1
+        # Give the host time to detach its CDC driver and discard the old endpoint state.
+        /bin/busybox sleep 3
         printf 'connect\n' > "$udc/soft_connect"
     fi
 fi
