@@ -17,6 +17,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       pages: read
@@ -25,11 +26,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/configure-pages@v5
-      - name: Install build tools
+      - name: Install Arm cross-compiler
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi
-          rustup toolchain install 1.94.1 --profile minimal --target wasm32-unknown-unknown
+          cd "$RUNNER_TEMP"
+          toolchain=gcc-arm-none-eabi-9-2019-q4-major
+          archive="$toolchain-x86_64-linux.tar.bz2"
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 15 --max-time 120 \
+            "https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu-rm/9-2019q4/$archive" \
+            --output "$archive"
+          printf '%s  %s\n' bcd840f839d5bf49279638e9f67890b2ef3a7c9c7a9b25271e83ec4ff41d177a "$archive" | sha256sum --check
+          tar -xjf "$archive"
+          printf '%s\n' "$RUNNER_TEMP/$toolchain/bin" >> "$GITHUB_PATH"
+      - name: Install Rust WASM toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal --target wasm32-unknown-unknown
       - name: Build static site
         env:
           RUSTUP_TOOLCHAIN: 1.94.1
