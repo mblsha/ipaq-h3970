@@ -45,7 +45,7 @@ the source tree.
 
 ## GitHub Releases
 
-The **Build H3970 Linux and Doom kit** workflow runs the same container build.
+The **Build H3970 Linux and Doom kit** workflow runs `make release` on Ubuntu.
 It downloads a pinned Debian shareware package, verifies that its WAD matches
 the tested Doom 1.9 shareware data, and includes the package's copyright notice.
 Running the workflow manually produces downloadable Actions artifacts. Pushing a
