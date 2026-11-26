@@ -23,9 +23,10 @@ jobs:
         timeout-minutes: 5
         run: |
           sources="$RUNNER_TEMP/ubuntu.sources"
-          sed -e 's|http://|https://|g' -e 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+          sed 's|^URIs:.*|URIs: https://mirrors.mit.edu/ubuntu/|' \
             /etc/apt/sources.list.d/ubuntu.sources > "$sources"
           apt_options=(-o "Dir::Etc::sourcelist=$sources" -o Dir::Etc::sourceparts=- \
+            -o Acquire::Languages=none -o Acquire::ForceIPv4=true \
             -o Acquire::Retries=2 -o Acquire::https::Timeout=20)
           sudo apt-get "${apt_options[@]}" update
           sudo apt-get "${apt_options[@]}" install -y --no-install-recommends \
