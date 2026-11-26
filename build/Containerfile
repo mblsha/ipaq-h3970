@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    build-essential ca-certificates git python3 xz-utils bzip2 patch bison flex bc \
+    build-essential ca-certificates curl git python3 xz-utils bzip2 patch bison flex bc \
     clang llvm lld gcc-arm-linux-gnueabi libc6-dev-armel-cross \
     gcc-arm-none-eabi binutils-arm-none-eabi device-tree-compiler \
     libssl-dev libelf-dev && rm -rf /var/lib/apt/lists/*

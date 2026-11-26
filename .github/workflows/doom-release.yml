@@ -1,0 +1,62 @@
+name: Build H3970 Linux and Doom kit
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: doom-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build Linux and Doom release assets
+        run: |
+          docker build -f build/Containerfile -t ipaq-h3970-build .
+          mkdir -p "$RUNNER_TEMP/ipaq-build"
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/ipaq-build:/out" \
+            ipaq-h3970-build make release BUILD_DIR=/out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ipaq-h3970-release
+          path: ${{ runner.temp }}/ipaq-build/release/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ipaq-h3970-release
+      - name: Attach assets to a draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha256sum --check SHA256SUMS
+          assets=(ipaq-h3970-doom.zip ipaq-h3970-source-inputs.tar.gz SHA256SUMS)
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+            if [[ "$draft" != true ]]; then
+              echo 'This tag already has a published release.' >&2
+              exit 1
+            fi
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --draft \
+              --title "iPAQ H3970 Linux and Doom $GITHUB_REF_NAME" \
+              --notes 'Unzip `ipaq-h3970-doom.zip` and follow `README.txt`. The kit boots Linux in RAM and includes the Doom 1.9 shareware demo. Upload the matching EXE and BIN with the [WebUSB tools](https://mblsha.github.io/ipaq-h3970/).'
+          fi

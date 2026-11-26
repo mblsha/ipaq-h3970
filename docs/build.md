@@ -43,6 +43,27 @@ Other WADs must fit the RAM payload's page-list limit and may have
 different demos. Keep ROM dumps, IWADs and release binaries outside
 the source tree.
 
+## GitHub Releases
+
+The **Build H3970 Linux and Doom kit** workflow runs the same container build.
+It downloads a pinned Debian shareware package, verifies that its WAD matches
+the tested Doom 1.9 shareware data, and includes the package's copyright notice.
+Running the workflow manually produces downloadable Actions artifacts. Pushing a
+`v*` tag also attaches the verified assets to a draft GitHub release for review.
+
+To build the release assets locally with the container above, use an empty output
+directory and run:
+
+```sh
+mkdir -p .build/release-build
+docker run --rm -v "$PWD:/src:ro" -v "$PWD/.build/release-build:/out" \
+  ipaq-h3970-build make release BUILD_DIR=/out
+```
+
+The `release/` output contains the kit ZIP, the pinned Linux, BusyBox and
+DoomGeneric source archives, and `SHA256SUMS` for the two downloads. The GitHub
+release's source code archive contains this repository's build scripts and patches.
+
 ## Bench evidence
 
 The cold packer reproduces the hardware-tested launcher and payload

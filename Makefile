@@ -1,7 +1,7 @@
 BUILD_DIR ?= $(CURDIR)/.build
 IWAD ?=
 
-.PHONY: host web sources kernel kit kit-from-kernel
+.PHONY: host web sources kernel kit kit-from-kernel release
 
 host:
 	host/build_activesync.sh "$(BUILD_DIR)/h3970-activesync"
@@ -24,3 +24,6 @@ kit:
 
 kit-from-kernel: sources
 	build/kit.sh "$(BUILD_DIR)/sources" "$(BUILD_DIR)/kernel" "$(IWAD)" "$(BUILD_DIR)/kit"
+
+release:
+	sh build/release.sh "$(BUILD_DIR)"

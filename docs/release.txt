@@ -1,0 +1,17 @@
+iPAQ H3970 Linux and Doom RAM-boot kit
+
+1. Boot the H3970 into stock WinCE and connect its native USB dock.
+2. Open https://mblsha.github.io/ipaq-h3970/ in Chromium and connect.
+3. Select DOOMUSB.BIN and DOOMUSB.EXE from this ZIP, then upload and verify.
+4. In WinCE File Explorer, open My Documents and launch DOOMUSB.EXE.
+
+Linux boots in RAM and starts the Doom shareware demo in portrait mode
+with audio muted. Keep the EXE and BIN together. They are built as a pair.
+The Linux USB console uses CDC ACM. A soft reset returns to stock WinCE.
+
+SHA256SUMS checks the payload, launcher and device tree. The build manifest
+records source pins, toolchains, build settings and input hashes. The
+GitHub release also supplies the pinned Linux, BusyBox and DoomGeneric
+source archives. See LICENSES for license and shareware notices.
+
+Project and build instructions: https://github.com/mblsha/ipaq-h3970

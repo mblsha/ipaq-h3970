@@ -4,6 +4,9 @@ Back up stock WinCE over the native USB dock, transfer a Linux Doom kit,
 and boot it in RAM on the H3970. The Doom demo starts in portrait mode
 with audio muted. Linux keeps independent USB and UART consoles available.
 
+Download the prebuilt Linux and Doom kit from [GitHub Releases](https://github.com/mblsha/ipaq-h3970/releases).
+The ZIP includes the Doom 1.9 shareware data. Use the matching EXE and BIN together.
+
 ## Browser
 
 Open the [hosted iPAQ tools](https://mblsha.github.io/ipaq-h3970/) in
