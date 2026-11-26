@@ -17,6 +17,7 @@ _Static_assert(sizeof(TraceDcb) == 28, "WinCE DCB layout");
 
 extern Handle (*const ce_CreateFileW)(const Wide *, U32, U32, void *, U32, U32, Handle);
 extern int (*const ce_CloseHandle)(Handle);
+extern U32 (*const ce_GetModuleFileNameW)(Handle, Wide *, U32);
 extern int (*const ce_ReadFile)(Handle, void *, U32, U32 *, void *);
 extern int (*const ce_GetCommState)(Handle, TraceDcb *);
 extern int (*const ce_SetCommState)(Handle, TraceDcb *);

@@ -77,7 +77,7 @@ def pack(kernel_file, dtb_file, initrd_file, output):
 #define LINUX_INITRD_BYTES {len(initrd)}u
 #define LINUX_INITRD_START_PROP {patch_offset(dtb, START_MARKER)}u
 #define LINUX_INITRD_END_PROP {patch_offset(dtb, END_MARKER)}u
-#define LINUX_PATH L"\\\\My Documents\\\\DOOMUSB.BIN"
+#define LINUX_SIBLING 1
 """
         (work / "handoff_blob.h").write_text(
             header + "static const unsigned char handoff_blob[] = {"

@@ -13,6 +13,7 @@ root = Path(__file__).resolve().parents[1]
 kernel, iwad, out, doom, initramfs = map(Path, argv[1:])
 outputs = [out / name for name in ("DOOMUSB.EXE", "DOOMUSB.BIN", "H3970.DTB")]
 pins = {
+    "browser_kit": 1,
     "sources": PINS,
     "packager": {
         "python": platform.python_version(),

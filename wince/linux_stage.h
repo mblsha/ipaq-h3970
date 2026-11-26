@@ -15,15 +15,26 @@ typedef struct {
     int data_locked, table_locked;
 } LinuxStage;
 
-#ifndef LINUX_PATH
+#if !LINUX_SIBLING && !defined(LINUX_PATH)
 #define LINUX_PATH L"\\Storage Card\\LINUX.BIN"
-#define LINUX_OPEN_ERROR L"Open Storage Card LINUX.BIN"
-#else
-#define LINUX_OPEN_ERROR L"Open staged Doom payload"
 #endif
 
 static const Wide *prepare_linux(LinuxStage *stage, Handle port, U32 *value)
 {
+#if LINUX_SIBLING
+    Wide path[260];
+    U32 length = ce_GetModuleFileNameW(0, path, 260);
+    if (length < 5 || length >= 260 || path[length - 4] != L'.') {
+        *value = length;
+        return L"Locate the Doom launcher";
+    }
+    path[length - 3] = L'B';
+    path[length - 2] = L'I';
+    path[length - 1] = L'N';
+    path[length] = 0;
+#else
+    const Wide *path = LINUX_PATH;
+#endif
     stage->data = ce_VirtualAlloc(0, LINUX_ROUNDED, MEM_COMMIT_RESERVE, PAGE_READWRITE);
     stage->table = ce_VirtualAlloc(0, PAGE_BYTES, MEM_COMMIT_RESERVE, PAGE_READWRITE);
     stage->pfns = ce_VirtualAlloc(0, LINUX_PAGES * sizeof(U32), MEM_COMMIT_RESERVE, PAGE_READWRITE);
@@ -31,10 +42,10 @@ static const Wide *prepare_linux(LinuxStage *stage, Handle port, U32 *value)
         *value = ce_GetLastError();
         return L"Allocate Linux staging RAM";
     }
-    Handle file = ce_CreateFileW(LINUX_PATH, 0x80000000u, 1, 0, 3, 0, 0);
+    Handle file = ce_CreateFileW(path, 0x80000000u, 1, 0, 3, 0, 0);
     if (file == (Handle)-1) {
         *value = ce_GetLastError();
-        return LINUX_OPEN_ERROR;
+        return L"Open staged Linux payload";
     }
     U32 total = 0;
     const Wide *error = 0;

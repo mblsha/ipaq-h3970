@@ -42,7 +42,7 @@ remaining = (line for line in path.read_text().splitlines() if not key.match(lin
 path.write_text("\n".join([*remaining, *settings]) + "\n")
 PY
 yes "" | bbmake oldconfig > "$out/busybox-config.log"
-for setting in STATIC ASH ASH_TEST SH_IS_ASH CPIO GUNZIP CTTYHACK STTY SETSID; do
+for setting in STATIC ASH ASH_TEST SH_IS_ASH CPIO GUNZIP CTTYHACK STTY SETSID REBOOT SYNC; do
     grep -qx "CONFIG_$setting=y" "$work/busybox/.config"
 done
 bbmake -j"$jobs"
