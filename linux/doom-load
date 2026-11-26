@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+export PATH=/bin:/sbin HOME=/tmp
+cd /
+/bin/busybox gzip -dc /doom.cpio.gz | /bin/busybox cpio -id
+test -x /doom/doom-fb
+rm /doom.cpio.gz
+exec /doom/init

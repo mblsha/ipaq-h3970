@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Transfer files and launch a Pocket PC 2002 utility over the iPAQ cradle."""
+
+import argparse
+from contextlib import ExitStack, contextmanager, nullcontext
+import getpass
+import hashlib
+import json
+import os
+from pathlib import Path
+import queue
+import select
+import socket
+import struct
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+
+from activesync_ppp import Link
+from activesync_rapi import Rapi, read_exact, remote_path, utf16, words
+
+import wince_today
+import wince_transfer
+
+DCCM_PORT = 5679
+DCCM_PING = 0x12345678
+DOOM_USB_FILES = ("DOOMUSB.BIN", "DOOMUSB.EXE")
+
+
+def report(message):
+    print(message, file=sys.stderr, flush=True)
+
+
+def stop_process(child):
+    if child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=3)
+
+
+def write_bytes(fd, data):
+    while data:
+        count = os.write(fd, data)
+        if count == 0:
+            raise ConnectionError("Serial output was closed")
+        data = data[count:]
+
+
+def open_serial(args, stack):
+    if args.serial_socket:
+        conn = stack.enter_context(socket.socket(socket.AF_UNIX))
+        conn.connect(str(args.serial_socket))
+        fd = conn.fileno()
+        return fd, fd
+    if args.native_usb:
+        executable = args.usb_bridge or args.bridge.with_name("activesync-usb")
+        if not executable.is_file():
+            raise FileNotFoundError(
+                f"USB helper missing at {executable}. Run build_activesync.sh with libusb installed."
+            )
+        child = stack.enter_context(subprocess.Popen(
+            [str(executable.resolve())], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, bufsize=0,
+        ))
+        stack.callback(stop_process, child)
+        return child.stdout.fileno(), child.stdin.fileno()
+    if args.adapter:
+        command = [str(args.adapter.resolve()), "--terminal", "--serial", args.usb_serial,
+                   "--baud", str(args.baud), "--rts"]
+        if args.pulse_dtr:
+            # Selecting RTS alone in the direct terminal explicitly lowers DTR.
+            with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL) as port:
+                time.sleep(1.5)
+                if port.poll() is not None:
+                    raise ConnectionError("The dock adapter could not deassert DTR")
+                port.stdin.close()
+                try:
+                    port.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    stop_process(port)
+        child = stack.enter_context(subprocess.Popen(
+            command + ["--dtr"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
+        ))
+        stack.callback(stop_process, child)
+        return child.stdout.fileno(), child.stdin.fileno()
+
+    fd = os.open(args.tty, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    stack.callback(os.close, fd)
+    settings = termios.tcgetattr(fd)
+    stack.callback(termios.tcsetattr, fd, termios.TCSANOW, settings)
+    tty.setraw(fd, termios.TCSANOW)
+    raw = termios.tcgetattr(fd)
+    raw[2] |= termios.CLOCAL | termios.CREAD
+    raw[4] = raw[5] = getattr(termios, f"B{args.baud}")
+    termios.tcsetattr(fd, termios.TCSANOW, raw)
+    os.set_blocking(fd, True)
+    return fd, fd
+
+
+def serial_worker(serial_in, serial_out, packet_socket, stop):
+    link = Link(lambda data: write_bytes(serial_out, data), packet_socket.send, report)
+    while not stop.is_set():
+        ready, _, _ = select.select([serial_in, packet_socket], [], [], 0.1)
+        if serial_in in ready:
+            data = os.read(serial_in, 4096)
+            if not data:
+                raise ConnectionError("The serial connection closed")
+            link.serial_input(data)
+        if packet_socket in ready:
+            link.network_input(packet_socket.recv(1600))
+        link.tick()
+
+
+def password_packet(password, key):
+    encoded = bytes(byte ^ key for byte in utf16(password))
+    if not password or len(encoded) > 256:
+        raise ValueError("The ActiveSync password must contain 1 to 127 UTF-16 units")
+    return struct.pack("<H", len(encoded)) + encoded
+
+
+def dccm_worker(server, stop, connected, password):
+    server.settimeout(0.3)
+    while not stop.is_set():
+        try:
+            peer, _ = server.accept()
+            break
+        except TimeoutError:
+            continue
+    else:
+        return
+
+    with peer:
+        peer.settimeout(3)
+        password_key = None
+        info = None
+        seen_ping = time.monotonic()
+        next_ping = 0.0
+        while not stop.is_set():
+            now = time.monotonic()
+            if info is not None:
+                if now - seen_ping > 20:
+                    raise ConnectionError("WinCE stopped answering ActiveSync keepalives")
+                if now >= next_ping:
+                    peer.sendall(words(DCCM_PING))
+                    next_ping = now + 5
+            ready, _, _ = select.select([peer], [], [], 0.3)
+            if not ready:
+                continue
+            header = int.from_bytes(read_exact(peer, 4), "little")
+            if header == DCCM_PING:
+                seen_ping = time.monotonic()
+            elif 36 <= header < 512:
+                info = read_exact(peer, header)
+                if password_key is not None and read_exact(peer, 2) == b"\0\0":
+                    raise PermissionError("WinCE rejected the ActiveSync password")
+                seen_ping = time.monotonic()
+                peer.sendall(words(DCCM_PING))
+                next_ping = seen_ping + 5
+                connected.put((info, password_key))
+            elif header >= 512:
+                if password is None:
+                    raise PermissionError("WinCE requested an ActiveSync password. Use --ask-password.")
+                password_key = header & 255
+                peer.sendall(password_packet(password, password_key))
+            elif header != 0:
+                raise ValueError(f"Unexpected ActiveSync connection message {header:#010x}")
+
+
+def start_worker(stack, stop, failures, target, *args):
+    def guarded():
+        try:
+            target(*args)
+        except (OSError, ValueError) as error:
+            if not stop.is_set():
+                failures.put(error)
+
+    thread = threading.Thread(target=guarded, daemon=True)
+    thread.start()
+    stack.callback(thread.join, 4)
+
+
+def check_workers(failures):
+    try:
+        error = failures.get_nowait()
+    except queue.Empty:
+        return
+    raise error
+
+
+def connect_rapi(port, password, password_key, cutoff, failures):
+    while time.monotonic() < cutoff:
+        check_workers(failures)
+        conn = None
+        try:
+            conn = socket.create_connection(("127.0.0.1", port), timeout=4)
+            if password_key is not None:
+                conn.sendall(password_packet(password, password_key))
+                if read_exact(conn, 1) == b"\0":
+                    raise PermissionError("WinCE rejected the RAPI password")
+            client = Rapi(conn)
+            version = client.version()
+            conn.settimeout(20)
+            return conn, client, version
+        except (ConnectionError, TimeoutError):
+            if conn is not None:
+                conn.close()
+            time.sleep(0.3)
+        except BaseException:
+            if conn is not None:
+                conn.close()
+            raise
+    raise TimeoutError("WinCE announced itself but its RAPI server did not answer")
+
+
+@contextmanager
+def session(args, password):
+    stop = threading.Event()
+    failures = queue.Queue()
+    connected = queue.Queue()
+    cutoff = time.monotonic() + args.timeout
+    with ExitStack() as stack:
+        dccm = stack.enter_context(socket.socket())
+        dccm.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        dccm.bind(("127.0.0.1", DCCM_PORT))
+        dccm.listen(1)
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            rapi_port = probe.getsockname()[1]
+
+        link, backend = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        stack.enter_context(link)
+        stack.enter_context(backend)
+        # Darwin's default Unix datagram receive queue holds only two MTUs.
+        # Buffer bursts from TCP while the PPP thread drains the slower dock.
+        for endpoint in (link, backend):
+            endpoint.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
+            endpoint.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
+        bridge = stack.enter_context(subprocess.Popen(
+            [str(args.bridge.resolve()), str(backend.fileno()), str(rapi_port)],
+            pass_fds=(backend.fileno(),), stdout=subprocess.PIPE,
+        ))
+        stack.callback(stop_process, bridge)
+        backend.close()
+        ready, _, _ = select.select([bridge.stdout], [], [], 5)
+        if not ready or bridge.stdout.readline() != b"ready\n":
+            raise ConnectionError("The libslirp bridge did not start")
+
+        serial_in, serial_out = open_serial(args, stack)
+        start_worker(stack, stop, failures, serial_worker, serial_in, serial_out, link, stop)
+        start_worker(stack, stop, failures, dccm_worker, dccm, stop, connected, password)
+        stack.callback(stop.set)
+        transport = "USB" if args.native_usb else "serial"
+        report(f"Waiting for WinCE ActiveSync {transport} connection")
+        while True:
+            check_workers(failures)
+            if bridge.poll() is not None:
+                raise ConnectionError("The libslirp bridge exited")
+            if time.monotonic() >= cutoff:
+                raise TimeoutError("Timed out waiting for a WinCE ActiveSync connection")
+            try:
+                info, password_key = connected.get(timeout=0.25)
+                break
+            except queue.Empty:
+                pass
+        build = int.from_bytes(info[6:8], "little")
+        report(f"WinCE connection announced build {build}")
+        conn, client, version = connect_rapi(rapi_port, password, password_key, cutoff, failures)
+        stack.enter_context(conn)
+        yield client, version
+
+
+def arguments():
+    parser = argparse.ArgumentParser(description=__doc__)
+    here = Path(__file__).resolve().parent
+    build = here.parent / ".build"
+    bridge = here / "activesync-slirp"
+    if not bridge.is_file():
+        bridge = build / "h3970-activesync/activesync-slirp"
+    parser.add_argument("--bridge", type=Path, default=bridge, help="compiled activesync-slirp helper")
+    interface = parser.add_mutually_exclusive_group()
+    interface.add_argument("--tty", type=Path, help="serial cradle TTY")
+    interface.add_argument("--adapter", type=Path, help="direct PL2303 terminal executable")
+    interface.add_argument("--native-usb", action="store_true", help="native WinCE USB Sync interface (default)")
+    interface.add_argument("--serial-socket", type=Path, help="QEMU serial chardev socket")
+    parser.add_argument("--usb-bridge", type=Path, help="compiled activesync-usb helper")
+    parser.add_argument("--usb-serial", help="exact USB adapter serial number for --adapter")
+    parser.add_argument("--pulse-dtr", action="store_true", help="retrigger cradle detection with --adapter")
+    parser.add_argument("--baud", type=int, choices=(19200, 38400, 57600, 115200), default=115200)
+    parser.add_argument("--timeout", type=float, default=90, help="connection deadline in seconds")
+    parser.add_argument("--ask-password", action="store_true", help="read the ActiveSync password without echo")
+    parser.add_argument("--allow-mutations", action="store_true", help="allow put and run")
+    actions = parser.add_subparsers(dest="action", required=True)
+    actions.add_parser("info", help="show WinCE version")
+    listing = actions.add_parser("ls", help="list a directory")
+    listing.add_argument("remote", nargs="?", default="/", type=remote_path)
+    push = actions.add_parser("put", help="upload and verify a file")
+    push.add_argument("local", type=Path)
+    push.add_argument("remote", type=remote_path)
+    push.add_argument("--run", action="store_true", help="launch the file after verifying it")
+    pull = actions.add_parser("get", help="download a file")
+    pull.add_argument("remote", type=remote_path)
+    pull.add_argument("local", type=Path)
+    launch = actions.add_parser("run", help="launch a WinCE executable")
+    launch.add_argument("remote", type=remote_path)
+    launch.add_argument("--command-line")
+    boot_doom = actions.add_parser(
+        "boot-doom", help="verify, stage, and start the native USB Doom RAM image")
+    boot_doom.add_argument("kit", type=Path, help="directory containing DOOMUSB.EXE and DOOMUSB.BIN")
+    boot_doom.add_argument("--helpers", type=Path, help="directory containing TRANSFER.EXE from build_transfers.py")
+    boot_doom.add_argument("--stage-only", action="store_true", help="upload and verify without starting Linux")
+    dump_rom = actions.add_parser("dump-rom", help="read the H3970 NOR into a file over native USB")
+    dump_rom.add_argument("output", type=Path)
+    dump_rom.add_argument("--helpers", type=Path, default=wince_transfer.HELPERS, help="directory from build_transfers.py")
+    dump_rom.add_argument("--length", type=lambda value: int(value, 0), default=wince_transfer.NOR_SIZE,
+                          help="optional byte count from the start of the ROM (default: all 48 MiB)")
+    save_touch = actions.add_parser("save-calibration", help="save this iPAQ's touch calibration to the host")
+    save_touch.add_argument("output", type=Path)
+    today = actions.add_parser("return-today", help="finish WinCE setup after returning from Linux")
+    today.add_argument("calibration", type=Path, help="calibration saved from this iPAQ")
+    today.add_argument("--helpers", type=Path, default=wince_today.HELPERS, help="directory from build_today.py")
+    today.add_argument("--screenshot", type=Path, help="save the verified Today panel as a BMP")
+    args = parser.parse_args()
+    args.native_usb = args.native_usb or not (args.tty or args.adapter or args.serial_socket)
+    if bool(args.adapter) != bool(args.usb_serial):
+        parser.error("--adapter and --usb-serial must be supplied together")
+    if args.pulse_dtr and not args.adapter:
+        parser.error("--pulse-dtr requires --adapter")
+    if args.usb_bridge and not args.native_usb:
+        parser.error("--usb-bridge requires the native USB transport")
+    if not 1 <= args.timeout <= 600:
+        parser.error("--timeout must be between 1 and 600 seconds")
+    if args.action in ("put", "run", "boot-doom", "dump-rom", "return-today") and not args.allow_mutations:
+        parser.error(f"{args.action} requires --allow-mutations")
+    if args.action in ("boot-doom", "dump-rom") and not args.native_usb:
+        parser.error(f"{args.action} requires the native USB transport")
+    return args
+
+
+def boot_usb_doom(client, kit, progress_helper=None, *, stage_only=False):
+    folder = r"\My Documents"
+    existing = {name.upper() for name, _, _ in client.list(folder)}
+    progress_context = nullcontext()
+    if progress_helper:
+        total = sum((kit / name).stat().st_size for name in DOOM_USB_FILES)
+        stage = "verify" if all(name in existing for name in DOOM_USB_FILES) else "upload"
+        progress_context = wince_transfer.device_progress(client, progress_helper, stage, total)
+    with progress_context as progress:
+        for name in DOOM_USB_FILES:
+            source = kit / name
+            remote = f"{folder}\\{name}"
+            if name in existing:
+                expected = hashlib.sha256(source.read_bytes()).digest()
+                observed = hashlib.sha256()
+                for chunk in client.read(remote, chunk_size=wince_transfer.USB_READ_SIZE):
+                    observed.update(chunk)
+                    if progress:
+                        progress.advance("verify", len(chunk))
+                if observed.digest() != expected:
+                    raise FileExistsError(f"{remote} already exists with different contents")
+                verified = observed.hexdigest()
+            else:
+                report(f"Uploading and verifying {name} ({source.stat().st_size} bytes)")
+                verified = client.push(source, remote, progress=progress.advance if progress else None,
+                                       write_size=wince_transfer.USB_WRITE_SIZE,
+                                       verify_size=wince_transfer.USB_READ_SIZE)
+            report(f"{name} verified: {verified}")
+    if not stage_only:
+        client.launch(f"{folder}\\{DOOM_USB_FILES[-1]}", None)
+        report("WinCE started DOOMUSB.EXE")
+
+
+def main():
+    args = arguments()
+    password = getpass.getpass("ActiveSync password: ") if args.ask_password else None
+    try:
+        progress_helper = None
+        if args.action == "boot-doom":
+            for name in DOOM_USB_FILES:
+                if not (args.kit / name).is_file():
+                    raise FileNotFoundError(args.kit / name)
+            candidate = (args.helpers or wince_transfer.HELPERS) / "TRANSFER.EXE"
+            if args.helpers and not candidate.is_file():
+                raise FileNotFoundError(candidate)
+            if candidate.is_file():
+                progress_helper = candidate
+        if args.action == "dump-rom":
+            for name in ("DUMPUSB.EXE", "TRANSFER.EXE"):
+                if not (args.helpers / name).is_file():
+                    raise FileNotFoundError(args.helpers / name)
+        with session(args, password) as (client, version):
+            if args.action in ("save-calibration", "return-today") and version != wince_today.BUILD:
+                raise ValueError("The Today helpers require stock H3970 WinCE build 11171")
+            if args.action == "info":
+                print(json.dumps(version))
+            elif args.action == "ls":
+                for name, directory, size in client.list(args.remote):
+                    print(f"{'-' if directory else size:>10}  {name}{'/' if directory else ''}")
+            elif args.action == "put":
+                print(client.push(args.local, args.remote))
+                if args.run:
+                    client.launch(args.remote, None)
+            elif args.action == "get":
+                print(client.pull(args.remote, args.local))
+            elif args.action == "run":
+                client.launch(args.remote, args.command_line)
+            elif args.action == "boot-doom":
+                boot_usb_doom(client, args.kit, progress_helper, stage_only=args.stage_only)
+            elif args.action == "dump-rom":
+                if version != wince_today.BUILD:
+                    raise ValueError("dump-rom requires stock H3970 WinCE build 11171")
+                print(wince_transfer.dump_rom(client, args.output, args.helpers, args.length))
+            elif args.action == "save-calibration":
+                wince_today.save_calibration(client, args.output)
+            elif args.action == "return-today":
+                wince_today.return_today(client, args.helpers, args.calibration, args.screenshot)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"cli-activesync: {error}") from None
+
+
+if __name__ == "__main__":
+    main()

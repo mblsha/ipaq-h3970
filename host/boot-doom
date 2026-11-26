@@ -1,0 +1,16 @@
+#!/bin/sh
+# Use a launcher from this project's cold kit. It gives the USB host time
+# to release the WinCE interface before Linux brings up CDC ACM.
+set -eu
+if [ "$#" != 1 ]; then
+    echo "Usage: $0 DOOM_KIT_DIRECTORY" >&2
+    exit 2
+fi
+host=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+release="$host/../.build/h3970-activesync/drop-wince-usb"
+if [ ! -x "$release" ]; then
+    echo "Build the native tools with make host first." >&2
+    exit 1
+fi
+"$host/cli-activesync" --allow-mutations boot-doom "$1"
+exec "$release" unconfigure

@@ -1,0 +1,9 @@
+.build/
+__pycache__/
+*.pyc
+/target/
+/web/tcp/target/
+*.wad
+*.WAD
+H3970ROM.BIN
+wince.bin

@@ -1,0 +1,570 @@
+--- a/d_main.c
++++ b/d_main.c
+@@ -196,9 +196,12 @@
+     }
+ 
+     // save the current screen if about to wipe
+-    if (gamestate != wipegamestate)
+-		{
+-		wipe = true;
++    // A melt mixes frames in the same layout. Cut when switching between
++    // the centered 200-line art and the full-height world.
++    if (gamestate != wipegamestate &&
++        (gamestate == GS_LEVEL) == (oldgamestate == GS_LEVEL))
++    {
++        wipe = true;
+ 		wipe_StartScreen(0, 0, SCREENWIDTH, SCREENHEIGHT);
+     }
+     else
+@@ -215,12 +218,12 @@
+ 			break;
+ 		if (automapactive)
+ 			AM_Drawer ();
+-		if (wipe || (viewheight != 200 && fullscreen) )
++		if (wipe || oldgamestate != GS_LEVEL || (viewheight != SCREENHEIGHT && fullscreen))
+ 			redrawsbar = true;
+ 		if (inhelpscreensstate && !inhelpscreens)
+ 			redrawsbar = true;              // just put away the help screen
+-		ST_Drawer (viewheight == 200, redrawsbar );
+-		fullscreen = viewheight == 200;
++		ST_Drawer (viewheight == SCREENHEIGHT, redrawsbar );
++		fullscreen = viewheight == SCREENHEIGHT;
+ 		break;
+ 
+       case GS_INTERMISSION:
+@@ -474,7 +477,7 @@
+ //
+ void D_PageTicker (void)
+ {
+-    if (--pagetic < 0)
++    if (!menuactive && --pagetic < 0)
+ 	D_AdvanceDemo ();
+ }
+ 
+--- a/f_finale.c
++++ b/f_finale.c
+@@ -637,7 +637,7 @@
+     if (finalecount < 1180)
+     {
+         V_DrawPatch((SCREENWIDTH - 13 * 8) / 2,
+-                    (SCREENHEIGHT - 8 * 8) / 2, 
++                    (ORIGINALHEIGHT - 8 * 8) / 2, 
+                     W_CacheLumpName(DEH_String("END0"), PU_CACHE));
+ 	laststage = 0;
+ 	return;
+@@ -654,7 +654,7 @@
+ 	
+     DEH_snprintf(name, 10, "END%i", stage);
+     V_DrawPatch((SCREENWIDTH - 13 * 8) / 2, 
+-                (SCREENHEIGHT - 8 * 8) / 2, 
++                (ORIGINALHEIGHT - 8 * 8) / 2, 
+                 W_CacheLumpName (name,PU_CACHE));
+ }
+ 
+--- a/g_game.c
++++ b/g_game.c
+@@ -17,6 +17,7 @@
+ 
+ 
+ 
++#include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+ #include <math.h>
+@@ -2211,7 +2212,8 @@
+     starttime = I_GetTime (); 
+ 
+     usergame = false; 
+-    demoplayback = true; 
++    demoplayback = true;
++    fprintf(stderr, "H3970 DOOM: playing %s\n", defdemoname);
+ } 
+ 
+ //
+--- a/i_video.c
++++ b/i_video.c
+@@ -30,6 +30,8 @@
+ #include "m_argv.h"
+ #include "d_event.h"
+ #include "d_main.h"
++#include "doomstat.h"
++#include "w_wad.h"
+ #include "i_video.h"
+ #include "i_system.h"
+ #include "z_zone.h"
+@@ -320,9 +322,12 @@
+ 
+ void I_FinishUpdate (void)
+ {
+-    int y;
++    const int art_top = (SCREENHEIGHT - ORIGINALHEIGHT) / 2;
++    extern boolean inhelpscreens;
++    boolean classic_art = gamestate != GS_LEVEL || inhelpscreens;
++    const byte *flat = classic_art ? W_CacheLumpName("FLOOR7_2", PU_CACHE) : NULL;
+     int x_offset, y_offset, x_offset_end;
+-    unsigned char *line_in, *line_out;
++    unsigned char *line_out;
+ 
+     /* Offsets in case FB is bigger than DOOM */
+     /* 600 = s_Fb heigt, 200 screenheight */
+@@ -334,13 +339,25 @@
+     x_offset_end = ((s_Fb.xres - (SCREENWIDTH  * fb_scaling)) * s_Fb.bits_per_pixel/8) - x_offset;
+ 
+     /* DRAW SCREEN */
+-    line_in  = (unsigned char *) I_VideoBuffer;
+     line_out = (unsigned char *) DG_ScreenBuffer;
+ 
+-    y = SCREENHEIGHT;
+-
+-    while (y--)
++    for (int y = 0; y < SCREENHEIGHT; ++y)
+     {
++        byte tile_row[SCREENWIDTH];
++        byte *line_in;
++
++        if (classic_art && (y < art_top || y >= art_top + ORIGINALHEIGHT))
++        {
++            for (int x = 0; x < SCREENWIDTH; x += 64)
++                memcpy(tile_row + x, flat + (y % 64) * 64, 64);
++            line_in = tile_row;
++        }
++        else
++        {
++            int source_y = classic_art ? y - art_top : y;
++            line_in = I_VideoBuffer + source_y * SCREENWIDTH;
++        }
++
+         int i;
+         for (i = 0; i < fb_scaling; i++) {
+             line_out += x_offset;
+@@ -363,7 +380,6 @@
+ #endif
+             line_out += (SCREENWIDTH * fb_scaling * (s_Fb.bits_per_pixel/8)) + x_offset_end;
+         }
+-        line_in += SCREENWIDTH;
+     }
+ 
+ 	DG_DrawFrame();
+--- a/i_video.h
++++ b/i_video.h
+@@ -25,7 +25,9 @@
+ // Screen width and height.
+ 
+ #define SCREENWIDTH  320
+-#define SCREENHEIGHT 200
++#define ORIGINALHEIGHT 200
++// 320x356 fits 240x320 with Doom's 5:6 pixel aspect ratio.
++#define SCREENHEIGHT 356
+ 
+ // Screen width used for "squash" scale functions
+ 
+--- a/m_menu.c
++++ b/m_menu.c
+@@ -1898,9 +1898,18 @@
+ //
+ void M_StartControlPanel (void)
+ {
++    extern boolean timingdemo;
++
+     // intro might call this repeatedly
+     if (menuactive)
+ 	return;
++
++    if (demoplayback && !singledemo && !timingdemo)
++    {
++        G_CheckDemoStatus();
++        D_StartTitle();
++        fprintf(stderr, "H3970 DOOM: demo interrupted by menu\n");
++    }
+     
+     menuactive = 1;
+     currentMenu = &MainDef;         // JDC
+@@ -1964,7 +1973,8 @@
+     if (messageToPrint)
+     {
+ 	start = 0;
+-	y = SCREENHEIGHT/2 - M_StringHeight(messageString) / 2;
++	y = (gamestate == GS_LEVEL ? SCREENHEIGHT : ORIGINALHEIGHT) / 2
++            - M_StringHeight(messageString) / 2;
+ 	while (messageString[start] != '\0')
+ 	{
+ 	    int foundnewline = 0;
+--- a/r_defs.h
++++ b/r_defs.h
+@@ -428,17 +428,9 @@
+   int			minx;
+   int			maxx;
+   
+-  // leave pads for [minx-1]/[maxx+1]
+-  
+-  byte		pad1;
+-  // Here lies the rub for all
+-  //  dynamic resize/change of resolution.
+-  byte		top[SCREENWIDTH];
+-  byte		pad2;
+-  byte		pad3;
+-  // See above.
+-  byte		bottom[SCREENWIDTH];
+-  byte		pad4;
++  // Portrait scanline numbers can exceed 255.
++  unsigned short top[SCREENWIDTH];
++  unsigned short bottom[SCREENWIDTH];
+ 
+ } visplane_t;
+ 
+--- a/r_main.c
++++ b/r_main.c
+@@ -22,6 +22,7 @@
+ 
+ 
+ 
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <math.h>
+ 
+@@ -34,6 +35,7 @@
+ 
+ #include "r_local.h"
+ #include "r_sky.h"
++#include "st_stuff.h"
+ 
+ 
+ 
+@@ -672,6 +674,8 @@
+     int		j;
+     int		level;
+     int		startmap; 	
++    int		classic_viewheight;
++    int		classic_screen_center;
+ 
+     setsizeneeded = false;
+ 
+@@ -679,17 +683,24 @@
+     {
+ 	scaledviewwidth = SCREENWIDTH;
+ 	viewheight = SCREENHEIGHT;
++	classic_viewheight = ORIGINALHEIGHT;
+     }
+     else
+     {
+ 	scaledviewwidth = setblocks*32;
+-	viewheight = (setblocks*168/10)&~7;
++	viewheight = setblocks == 10 ? SCREENHEIGHT - ST_HEIGHT
++                                   : (setblocks * (SCREENHEIGHT - ST_HEIGHT) / 10) & ~7;
++        classic_viewheight = (setblocks * (ORIGINALHEIGHT - ST_HEIGHT) / 10) & ~7;
+     }
+     
+     detailshift = setdetail;
+     viewwidth = scaledviewwidth>>detailshift;
+ 	
+-    centery = viewheight/2;
++    R_InitBuffer (scaledviewwidth, viewheight);
++    // Match the stock horizon as a fraction of the entire screen.
++    classic_screen_center = (setblocks == 11 ? ORIGINALHEIGHT : ORIGINALHEIGHT - ST_HEIGHT) / 2;
++    centery = (classic_screen_center * SCREENHEIGHT + ORIGINALHEIGHT / 2) / ORIGINALHEIGHT
++              - viewwindowy;
+     centerx = viewwidth/2;
+     centerxfrac = centerx<<FRACBITS;
+     centeryfrac = centery<<FRACBITS;
+@@ -710,13 +721,18 @@
+ 	spanfunc = R_DrawSpanLow;
+     }
+ 
+-    R_InitBuffer (scaledviewwidth, viewheight);
+-	
+     R_InitTextureMapping ();
+     
+     // psprite scales
+     pspritescale = FRACUNIT*viewwidth/SCREENWIDTH;
+     pspriteiscale = FRACUNIT*SCREENWIDTH/viewwidth;
++
++    // Anchor the original weapon placement to the bottom of the view.
++    psprite_yoffset = FixedDiv((viewheight - classic_viewheight / 2 - centery) * FRACUNIT,
++                               pspritescale << detailshift);
++    fprintf(stderr, "H3970 DOOM: view %dx%d, classic height %d, projection %d, horizon %d\n",
++            scaledviewwidth, viewheight, classic_viewheight, projection >> FRACBITS,
++            viewwindowy + centery);
+     
+     // thing clipping
+     for (i=0 ; i<viewwidth ; i++)
+@@ -725,7 +741,7 @@
+     // planes
+     for (i=0 ; i<viewheight ; i++)
+     {
+-	dy = ((i-viewheight/2)<<FRACBITS)+FRACUNIT/2;
++	dy = (i - centery) * FRACUNIT + FRACUNIT / 2;
+ 	dy = abs(dy);
+ 	yslope[i] = FixedDiv ( (viewwidth<<detailshift)/2*FRACUNIT, dy);
+     }
+--- a/r_plane.c
++++ b/r_plane.c
+@@ -43,6 +43,7 @@
+ 
+ // Here comes the obnoxious "visplane".
+ #define MAXVISPLANES	128
++#define VISPLANE_UNSET 0xffff
+ visplane_t		visplanes[MAXVISPLANES];
+ visplane_t*		lastvisplane;
+ visplane_t*		floorplane;
+@@ -290,7 +291,7 @@
+     }
+ 
+     for (x=intrl ; x<= intrh ; x++)
+-	if (pl->top[x] != 0xff)
++	if (pl->top[x] != VISPLANE_UNSET)
+ 	    break;
+ 
+     if (x > intrh)
+@@ -362,7 +363,8 @@
+     visplane_t*		pl;
+     int			light;
+     int			x;
+-    int			stop;
++    int			prev_top;
++    int			prev_bottom;
+     int			angle;
+     int                 lumpnum;
+ 				
+@@ -428,18 +430,18 @@
+ 
+ 	planezlight = zlight[light];
+ 
+-	pl->top[pl->maxx+1] = 0xff;
+-	pl->top[pl->minx-1] = 0xff;
+-		
+-	stop = pl->maxx + 1;
+-
+-	for (x=pl->minx ; x<= stop ; x++)
+-	{
+-	    R_MakeSpans(x,pl->top[x-1],
+-			pl->bottom[x-1],
+-			pl->top[x],
+-			pl->bottom[x]);
+-	}
++        prev_top = VISPLANE_UNSET;
++        prev_bottom = 0;
++        for (x = pl->minx; x <= pl->maxx; ++x)
++        {
++            int top = pl->top[x];
++            int bottom = top == VISPLANE_UNSET ? 0 : pl->bottom[x];
++
++            R_MakeSpans(x, prev_top, prev_bottom, top, bottom);
++            prev_top = top;
++            prev_bottom = bottom;
++        }
++        R_MakeSpans(x, prev_top, prev_bottom, VISPLANE_UNSET, 0);
+ 	
+         W_ReleaseLumpNum(lumpnum);
+     }
+--- a/r_things.c
++++ b/r_things.c
+@@ -66,6 +66,7 @@
+ // There was a lot of stuff grabbed wrong, so I changed it...
+ //
+ fixed_t		pspritescale;
++fixed_t		psprite_yoffset;
+ fixed_t		pspriteiscale;
+ 
+ lighttable_t**	spritelights;
+@@ -684,7 +685,8 @@
+     // store information in a vissprite
+     vis = &avis;
+     vis->mobjflags = 0;
+-    vis->texturemid = (BASEYCENTER<<FRACBITS)+FRACUNIT/2-(psp->sy-spritetopoffset[lump]);
++    vis->texturemid = (BASEYCENTER<<FRACBITS)+FRACUNIT/2-(psp->sy-spritetopoffset[lump])
++                      - psprite_yoffset;
+     vis->x1 = x1 < 0 ? 0 : x1;
+     vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;	
+     vis->scale = pspritescale<<detailshift;
+--- a/r_things.h
++++ b/r_things.h
+@@ -41,6 +41,7 @@
+ 
+ extern fixed_t		pspritescale;
+ extern fixed_t		pspriteiscale;
++extern fixed_t		psprite_yoffset;
+ 
+ 
+ void R_DrawMaskedColumn (column_t* column);
+--- a/st_stuff.c
++++ b/st_stuff.c
+@@ -84,7 +84,7 @@
+ #define ST_X2				104
+ 
+ #define ST_FX  			143
+-#define ST_FY  			169
++#define ST_FY  			(169 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // Should be set to patch width
+ //  for tall numbers later on
+@@ -112,7 +112,7 @@
+ #define ST_DEADFACE			(ST_GODFACE+1)
+ 
+ #define ST_FACESX			143
+-#define ST_FACESY			168
++#define ST_FACESY			(168 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ #define ST_EVILGRINCOUNT		(2*TICRATE)
+ #define ST_STRAIGHTFACECOUNT	(TICRATE/2)
+@@ -134,105 +134,105 @@
+ // AMMO number pos.
+ #define ST_AMMOWIDTH		3	
+ #define ST_AMMOX			44
+-#define ST_AMMOY			171
++#define ST_AMMOY			(171 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // HEALTH number pos.
+ #define ST_HEALTHWIDTH		3	
+ #define ST_HEALTHX			90
+-#define ST_HEALTHY			171
++#define ST_HEALTHY			(171 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // Weapon pos.
+ #define ST_ARMSX			111
+-#define ST_ARMSY			172
++#define ST_ARMSY			(172 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_ARMSBGX			104
+-#define ST_ARMSBGY			168
++#define ST_ARMSBGY			(168 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_ARMSXSPACE		12
+ #define ST_ARMSYSPACE		10
+ 
+ // Frags pos.
+ #define ST_FRAGSX			138
+-#define ST_FRAGSY			171	
++#define ST_FRAGSY			(171 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_FRAGSWIDTH		2
+ 
+ // ARMOR number pos.
+ #define ST_ARMORWIDTH		3
+ #define ST_ARMORX			221
+-#define ST_ARMORY			171
++#define ST_ARMORY			(171 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // Key icon positions.
+ #define ST_KEY0WIDTH		8
+ #define ST_KEY0HEIGHT		5
+ #define ST_KEY0X			239
+-#define ST_KEY0Y			171
++#define ST_KEY0Y			(171 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_KEY1WIDTH		ST_KEY0WIDTH
+ #define ST_KEY1X			239
+-#define ST_KEY1Y			181
++#define ST_KEY1Y			(181 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_KEY2WIDTH		ST_KEY0WIDTH
+ #define ST_KEY2X			239
+-#define ST_KEY2Y			191
++#define ST_KEY2Y			(191 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // Ammunition counter.
+ #define ST_AMMO0WIDTH		3
+ #define ST_AMMO0HEIGHT		6
+ #define ST_AMMO0X			288
+-#define ST_AMMO0Y			173
++#define ST_AMMO0Y			(173 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_AMMO1WIDTH		ST_AMMO0WIDTH
+ #define ST_AMMO1X			288
+-#define ST_AMMO1Y			179
++#define ST_AMMO1Y			(179 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_AMMO2WIDTH		ST_AMMO0WIDTH
+ #define ST_AMMO2X			288
+-#define ST_AMMO2Y			191
++#define ST_AMMO2Y			(191 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_AMMO3WIDTH		ST_AMMO0WIDTH
+ #define ST_AMMO3X			288
+-#define ST_AMMO3Y			185
++#define ST_AMMO3Y			(185 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // Indicate maximum ammunition.
+ // Only needed because backpack exists.
+ #define ST_MAXAMMO0WIDTH		3
+ #define ST_MAXAMMO0HEIGHT		5
+ #define ST_MAXAMMO0X		314
+-#define ST_MAXAMMO0Y		173
++#define ST_MAXAMMO0Y		(173 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_MAXAMMO1WIDTH		ST_MAXAMMO0WIDTH
+ #define ST_MAXAMMO1X		314
+-#define ST_MAXAMMO1Y		179
++#define ST_MAXAMMO1Y		(179 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_MAXAMMO2WIDTH		ST_MAXAMMO0WIDTH
+ #define ST_MAXAMMO2X		314
+-#define ST_MAXAMMO2Y		191
++#define ST_MAXAMMO2Y		(191 + SCREENHEIGHT - ORIGINALHEIGHT)
+ #define ST_MAXAMMO3WIDTH		ST_MAXAMMO0WIDTH
+ #define ST_MAXAMMO3X		314
+-#define ST_MAXAMMO3Y		185
++#define ST_MAXAMMO3Y		(185 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // pistol
+ #define ST_WEAPON0X			110 
+-#define ST_WEAPON0Y			172
++#define ST_WEAPON0Y			(172 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // shotgun
+ #define ST_WEAPON1X			122 
+-#define ST_WEAPON1Y			172
++#define ST_WEAPON1Y			(172 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // chain gun
+ #define ST_WEAPON2X			134 
+-#define ST_WEAPON2Y			172
++#define ST_WEAPON2Y			(172 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // missile launcher
+ #define ST_WEAPON3X			110 
+-#define ST_WEAPON3Y			181
++#define ST_WEAPON3Y			(181 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // plasma gun
+ #define ST_WEAPON4X			122 
+-#define ST_WEAPON4Y			181
++#define ST_WEAPON4Y			(181 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+  // bfg
+ #define ST_WEAPON5X			134
+-#define ST_WEAPON5Y			181
++#define ST_WEAPON5Y			(181 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ // WPNS title
+ #define ST_WPNSX			109 
+-#define ST_WPNSY			191
++#define ST_WPNSY			(191 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+  // DETH title
+ #define ST_DETHX			109
+-#define ST_DETHY			191
++#define ST_DETHY			(191 + SCREENHEIGHT - ORIGINALHEIGHT)
+ 
+ //Incoming messages window location
+ //UNUSED
+--- a/v_video.c
++++ b/v_video.c
+@@ -588,7 +588,7 @@
+  
+ void V_DrawRawScreen(byte *raw)
+ {
+-    memcpy(dest_screen, raw, SCREENWIDTH * SCREENHEIGHT);
++    memcpy(dest_screen, raw, SCREENWIDTH * ORIGINALHEIGHT);
+ }
+ 
+ //
+--- a/wi_stuff.c
++++ b/wi_stuff.c
+@@ -80,7 +80,7 @@
+ #define SP_STATSY		50
+ 
+ #define SP_TIMEX		16
+-#define SP_TIMEY		(SCREENHEIGHT-32)
++#define SP_TIMEY		(ORIGINALHEIGHT-32)
+ 
+ 
+ // NET GAME STUFF
+@@ -491,7 +491,7 @@
+ 	if (left >= 0
+ 	    && right < SCREENWIDTH
+ 	    && top >= 0
+-	    && bottom < SCREENHEIGHT)
++	    && bottom < ORIGINALHEIGHT)
+ 	{
+ 	    fits = true;
+ 	}

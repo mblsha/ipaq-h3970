@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'">
+  <title>iPAQ H3970 USB transfers</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>iPAQ H3970</h1>
+      <p>Connect the native USB cable while the iPAQ is running WinCE.</p>
+    </header>
+    <section aria-labelledby="device-heading">
+      <h2 id="device-heading">Connection</h2>
+      <div class="connection">
+        <label>ActiveSync password <span>(optional)</span>
+          <input id="password" type="password" autocomplete="off" maxlength="127">
+        </label>
+        <button id="connect">Connect iPAQ</button>
+        <button id="disconnect" class="secondary" disabled>Disconnect</button>
+      </div>
+      <p id="device" aria-live="polite">Disconnected</p>
+    </section>
+    <div class="actions">
+      <section aria-labelledby="dump-heading">
+        <h2 id="dump-heading">WinCE ROM</h2>
+        <p>Read both NOR banks into a 48 MiB image.</p>
+        <button id="dump" disabled>Dump ROM</button>
+        <a id="download" download="H3970ROM.BIN" hidden>Save ROM image</a>
+      </section>
+      <section aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Linux Doom</h2>
+        <label>DOOMUSB.BIN<input id="image" type="file" accept=".bin"></label>
+        <label>DOOMUSB.EXE<input id="launcher" type="file" accept=".exe"></label>
+        <button id="upload" disabled>Upload and verify</button>
+      </section>
+    </div>
+    <section aria-label="Transfer progress" class="transfer">
+      <div aria-live="polite" role="status" id="status">Ready to connect</div>
+      <progress id="progress" aria-label="Transfer progress" max="1" value="0"></progress>
+      <span id="amount" aria-hidden="true"></span>
+      <output id="hashes" hidden></output>
+    </section>
+  </main>
+</body>
+</html>

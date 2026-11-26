@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/pxa-bus/usb@40600000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+};

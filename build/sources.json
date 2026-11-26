@@ -1,0 +1,28 @@
+{
+  "linux": {
+    "url": "https://github.com/mblsha/linux-zaurus.git",
+    "base": "7ab8afd5256bb42d92cfa74abd09f580f2b737bd",
+    "tested_base": "7734a917581009d3b496e9677f9e56107c99ff50",
+    "tested_tree": "96e8e242b01893c0fbc7bd6ef109d169fe6aa1a0",
+    "epoch": 1794396363
+  },
+  "busybox": {
+    "version": "1.37.0",
+    "url": "https://busybox.net/downloads/busybox-1.37.0.tar.bz2",
+    "sha256": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+  },
+  "doomgeneric": {
+    "revision": "e257a09527062bfb986b6e5e0780839b6cbd5b71",
+    "url": "https://codeload.github.com/ozkl/doomgeneric/tar.gz/e257a09527062bfb986b6e5e0780839b6cbd5b71",
+    "sha256": "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7"
+  },
+  "zig": {
+    "version": "0.15.2",
+    "sha256": {
+      "aarch64-linux": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f",
+      "x86_64-linux": "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239",
+      "aarch64-macos": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+      "x86_64-macos": "375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f"
+    }
+  }
+}

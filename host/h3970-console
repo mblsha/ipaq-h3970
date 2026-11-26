@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Open the H3970 Linux console or stage a RAM-only warm upgrade."""
+
+import argparse
+import base64
+from contextlib import contextmanager, suppress
+import hashlib
+import os
+from pathlib import Path
+import plistlib
+import re
+import select
+import shlex
+import subprocess
+import sys
+import termios
+import time
+import tty
+import uuid
+
+
+KIT_FILES = {
+    "warm-kexec": 64 * 1024,
+    "usb.dtb": 64 * 1024,
+    "usb.zImage": 4 * 1024 * 1024,
+    "initrd.cpio": 8 * 1024 * 1024,
+}
+BUSYBOX = "/bin/busybox"
+
+
+def descendants(entry):
+    yield entry
+    for child in entry.get("IORegistryEntryChildren", []):
+        yield from descendants(child)
+
+
+def native_port():
+    if sys.platform != "darwin":
+        raise ValueError("use --tty with the iPAQ's CDC ACM device on this host")
+    registry = subprocess.check_output([
+        "/usr/sbin/ioreg", "-a", "-p", "IOService", "-r", "-c",
+        "IOUSBHostDevice", "-l", "-w", "0",
+    ], timeout=4)
+    ports = {
+        child["IOCalloutDevice"]
+        for section in plistlib.loads(registry)
+        for entry in descendants(section)
+        if (entry.get("idVendor"), entry.get("idProduct")) == (0x0525, 0xa4a7)
+        for child in descendants(entry)
+        if child.get("IOCalloutDevice", "").startswith("/dev/cu.usbmodem")
+    }
+    if len(ports) > 1:
+        raise ValueError("multiple CDC gadgets found, select the iPAQ with --tty")
+    if not ports:
+        raise FileNotFoundError("the iPAQ's native USB console has not appeared")
+    return ports.pop()
+
+
+class Console:
+    def __init__(self, fd):
+        self.fd = fd
+        self.pending = bytearray()
+
+    def send(self, data):
+        remaining = memoryview(data)
+        while remaining:
+            if not select.select([], [self.fd], [], 8)[1]:
+                raise TimeoutError("iPAQ console stopped accepting input")
+            try:
+                count = os.write(self.fd, remaining[:512])
+            except BlockingIOError:
+                continue
+            if not count:
+                raise ConnectionError("iPAQ console closed")
+            remaining = remaining[count:]
+            # Leave room for BusyBox line editing and a recovery UART at 115200.
+            time.sleep(count / 9500)
+
+    def command(self, command, timeout=15):
+        nonce = uuid.uuid4().hex[:12]
+        pattern = re.compile(fr"(?m)^H3970_{nonce}:(\d+)\r?\n".encode())
+        wire = f"{command}; {BUSYBOX} printf '\\nH3970_%s:%s\\n' {nonce} \"$?\"\n"
+        self.send(wire.encode())
+        deadline = time.monotonic() + timeout
+        while (remaining := deadline - time.monotonic()) > 0:
+            match = pattern.search(self.pending)
+            if match:
+                status = int(match[1])
+                output = self.pending[:match.start()].decode(errors="replace")
+                del self.pending[:match.end()]
+                return status, output
+            if select.select([self.fd], [], [], min(remaining, .25))[0]:
+                data = os.read(self.fd, 4096)
+                if not data:
+                    raise ConnectionError("iPAQ console disconnected")
+                self.pending.extend(data)
+                if len(self.pending) > 1024 * 1024:
+                    raise ValueError("too much console output")
+        raise TimeoutError("no command response from the iPAQ")
+
+    def checked(self, command, timeout=15):
+        status, output = self.command(command, timeout)
+        if status:
+            raise ValueError(f"iPAQ command exited with {status}\n{output.rstrip()}")
+        return output
+
+    def interactive(self):
+        local = sys.stdin.fileno()
+        settings = termios.tcgetattr(local)
+        try:
+            tty.setraw(local)
+            self.send(b"\n")
+            while True:
+                ready, _, _ = select.select([local, self.fd], [], [])
+                if self.fd in ready:
+                    data = os.read(self.fd, 4096)
+                    if not data:
+                        return
+                    sys.stdout.buffer.write(data)
+                    sys.stdout.buffer.flush()
+                if local in ready:
+                    data = os.read(local, 4096)
+                    if not data or b"\x1d" in data:
+                        return
+                    self.send(data)
+        finally:
+            termios.tcsetattr(local, termios.TCSANOW, settings)
+
+
+@contextmanager
+def connect(device, timeout=45):
+    deadline = time.monotonic() + timeout
+    while True:
+        fd = None
+        try:
+            port = device or native_port()
+            fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+            tty.setraw(fd)
+            settings = termios.tcgetattr(fd)
+            settings[2] |= termios.CLOCAL | termios.CREAD
+            settings[4] = settings[5] = termios.B115200
+            termios.tcsetattr(fd, termios.TCSANOW, settings)
+            console = Console(fd)
+            console.send(b"\n")
+            console.checked("true", timeout=2)
+            break
+        except (OSError, subprocess.TimeoutExpired) as error:
+            if fd is not None:
+                os.close(fd)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"iPAQ console unavailable: {error}") from error
+            time.sleep(.3)
+    try:
+        yield console
+    finally:
+        os.close(fd)
+
+
+def upload(console, files, directory):
+    console.checked(f"{BUSYBOX} stty -echo")
+    try:
+        for name, data in files.items():
+            remote = f"{directory}/{name}"
+            console.checked(f": > {remote}")
+            for offset in range(0, len(data), 4096):
+                payload = base64.encodebytes(data[offset:offset + 4096]).decode()
+                console.checked(
+                    f"({BUSYBOX} base64 -d <<'H3970_DATA'\n{payload}H3970_DATA\n) >> {remote}",
+                    timeout=15,
+                )
+            digest = hashlib.sha256(data).hexdigest()
+            console.checked(f"echo '{digest}  {remote}' | {BUSYBOX} sha256sum -c")
+            print(f"Verified {name} ({len(data):,} bytes)", flush=True)
+    except BaseException:
+        # Interrupt an incomplete here-document before restoring echo.
+        with suppress(OSError):
+            console.send(b"\x03\n")
+        raise
+    finally:
+        console.checked(f"{BUSYBOX} stty echo")
+
+
+def upgrade(args):
+    files = {}
+    for filename, limit in KIT_FILES.items():
+        source = args.kit / filename
+        if not source.is_file() or not 0 < source.stat().st_size <= limit:
+            raise ValueError(f"missing or oversized kit file: {source}")
+        files[filename] = source.read_bytes()
+    with connect(args.tty) as console:
+        directory = f"/tmp/h3970-usb-{uuid.uuid4().hex[:10]}"
+        console.checked(f"{BUSYBOX} uname -r | {BUSYBOX} grep -q -- '-h3970-'")
+        # The kernel keeps a second copy of the staged segments for kexec.
+        minimum_kib = (sum(map(len, files.values())) + 1023) // 1024 + 16 * 1024
+        console.checked(
+            f"""test "$({BUSYBOX} awk '/^MemAvailable:/ {{print $2}}' /proc/meminfo)" -ge {minimum_kib}"""
+        )
+        console.checked(f"""test ! -L /tmp &&
+            case "$({BUSYBOX} stat -f -c %T /tmp)" in
+                ramfs|tmpfs) {BUSYBOX} mkdir -m 700 {directory} ;;
+                *) false ;;
+            esac""".replace("\n", " "))
+        upload(console, files, directory)
+        helper = f"{directory}/warm-kexec"
+        sysdir = f"{directory}/sys"
+        console.checked(f"{BUSYBOX} chmod 755 {helper} && {BUSYBOX} mkdir {sysdir}")
+        console.checked(f"""(set -e;
+            {BUSYBOX} mount -t sysfs -o ro sysfs {sysdir};
+            trap '{BUSYBOX} umount {sysdir}' EXIT;
+            test "$({BUSYBOX} cat {sysdir}/kernel/kexec_loaded)" = 0;
+            cd {directory};
+            {helper} usb.dtb usb.zImage initrd.cpio;
+            if ! test "$({BUSYBOX} cat {sysdir}/kernel/kexec_loaded)" = 1; then
+                {helper} unload; exit 1;
+            fi)""".replace("\n", " "))
+        if args.check_only:
+            console.checked(f"{helper} unload && {BUSYBOX} rm -rf {directory}")
+            print("Verified and unloaded the staged kernel. The running system is unchanged.")
+            return
+        print("Warm booting the verified RAM image", flush=True)
+        console.send(f"{helper} boot\n".encode())
+        time.sleep(2)
+    with connect(args.tty, timeout=75) as console:
+        console.checked(f"test ! -e {directory}")
+        print(console.checked("doomctl status").strip())
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tty", help="explicit serial port instead of macOS native USB discovery")
+    actions = parser.add_subparsers(dest="action")
+    actions.add_parser("shell", help="open a console (default), Ctrl-] to exit")
+    run = actions.add_parser("exec", help="run a command on the Linux console")
+    run.add_argument("command")
+    update = actions.add_parser("upgrade", help="verify and kexec a RAM-only Doom kit")
+    update.add_argument("kit", type=Path)
+    update.add_argument("--allow-mutations", action="store_true")
+    update.add_argument("--check-only", action="store_true", help="stage and unload without booting")
+    args = parser.parse_args()
+    if args.action == "upgrade" and not args.allow_mutations:
+        parser.error("upgrade requires --allow-mutations")
+    try:
+        if args.action == "upgrade":
+            upgrade(args)
+            return 0
+        with connect(args.tty) as console:
+            if args.action == "exec":
+                status, output = console.command(args.command)
+                print(output, end="")
+                return status
+            console.interactive()
+            return 0
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"h3970-console: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

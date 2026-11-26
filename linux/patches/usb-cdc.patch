@@ -1,0 +1,145 @@
+--- a/drivers/usb/gadget/udc/pxa25x_udc.c
++++ b/drivers/usb/gadget/udc/pxa25x_udc.c
+@@ -23,6 +23,7 @@
+ #include <linux/delay.h>
+ #include <linux/slab.h>
+ #include <linux/timer.h>
++#include <linux/workqueue.h>
+ #include <linux/list.h>
+ #include <linux/interrupt.h>
+ #include <linux/mm.h>
+@@ -1198,20 +1199,37 @@
+ 	return pullup(udc, true);
+ }
+ 
+-static irqreturn_t pxa25x_udc_vbus_irq(int irq, void *data)
+-{
+-	struct pxa25x_udc *udc = data;
+-	int ret;
+-
++static void pxa25x_udc_check_vbus(struct pxa25x_udc *udc)
++{
++	int ret, vbus;
++
++	vbus = gpiod_get_value_cansleep(udc->vbus_gpio);
++	if (vbus < 0 || udc->vbus == vbus)
++		return;
+ 	disable_irq(udc->usb_irq);
+-	udc->vbus = gpiod_get_value_cansleep(udc->vbus_gpio);
++	udc->vbus = vbus;
+ 	ret = pullup(udc, true);
+ 	enable_irq(udc->usb_irq);
+ 
+ 	if (ret)
+ 		dev_err_ratelimited(udc->dev,
+ 				    "failed to apply VBUS state: %d\n", ret);
++}
++
++static irqreturn_t pxa25x_udc_vbus_irq(int irq, void *data)
++{
++	pxa25x_udc_check_vbus(data);
+ 	return IRQ_HANDLED;
++}
++
++static void pxa25x_udc_vbus_poll(struct work_struct *work)
++{
++	struct pxa25x_udc *udc = container_of(to_delayed_work(work),
++					    struct pxa25x_udc, vbus_work);
++
++	pxa25x_udc_check_vbus(udc);
++	queue_delayed_work(system_freezable_wq, &udc->vbus_work,
++			   msecs_to_jiffies(125));
+ }
+ 
+ /* drivers may have software control over D+ pullup */
+@@ -2462,15 +2480,24 @@
+ 						   IRQF_TRIGGER_RISING |
+ 						   IRQF_TRIGGER_FALLING,
+ 						   "pxa25x-udc-vbus", dev);
+-		if (retval)
++		if (retval == -EINVAL) {
++			/* Some GPIO IRQ chips cannot detect both cable edges. */
++			dev->usb_disc_irq = 0;
++			INIT_DELAYED_WORK(&dev->vbus_work, pxa25x_udc_vbus_poll);
++			dev->poll_vbus = true;
++		} else if (retval) {
+ 			goto err;
++		}
+ 	}
+ 
+ 	create_debug_files(dev);
+ 
+ 	retval = usb_add_gadget_udc(&pdev->dev, &dev->gadget);
+-	if (!retval)
+-		return retval;
++	if (!retval) {
++		if (dev->poll_vbus)
++			queue_delayed_work(system_freezable_wq, &dev->vbus_work, 0);
++		return 0;
++	}
+ 
+ 	remove_debug_files(dev);
+  err:
+@@ -2483,8 +2510,12 @@
+ 	return retval;
+ }
+ 
+-static void pxa25x_udc_shutdown(struct platform_device *_dev)
+-{
++static void pxa25x_udc_shutdown(struct platform_device *pdev)
++{
++	struct pxa25x_udc *dev = platform_get_drvdata(pdev);
++
++	if (dev->poll_vbus)
++		cancel_delayed_work_sync(&dev->vbus_work);
+ 	pullup_off();
+ }
+ 
+@@ -2492,6 +2523,8 @@
+ {
+ 	struct pxa25x_udc *dev = platform_get_drvdata(pdev);
+ 
++	if (dev->poll_vbus)
++		cancel_delayed_work_sync(&dev->vbus_work);
+ 	if (dev->usb_disc_irq > 0)
+ 		disable_irq(dev->usb_disc_irq);
+ 	usb_del_gadget_udc(&dev->gadget);
+@@ -2531,6 +2564,8 @@
+ 	if (!udc->pullup_gpio && !gpio_is_valid(udc->mach->gpio_pullup) &&
+ 	    !udc->mach->udc_command)
+ 		WARNING("USB host won't detect disconnect!\n");
++	if (udc->poll_vbus)
++		cancel_delayed_work_sync(&udc->vbus_work);
+ 	udc->suspended = 1;
+ 
+ 	local_irq_save(flags);
+@@ -2549,6 +2584,8 @@
+ 	local_irq_save(flags);
+ 	pullup(udc, true);
+ 	local_irq_restore(flags);
++	if (udc->poll_vbus)
++		queue_delayed_work(system_freezable_wq, &udc->vbus_work, 0);
+ 
+ 	return 0;
+ }
+--- a/drivers/usb/gadget/udc/pxa25x_udc.h
++++ b/drivers/usb/gadget/udc/pxa25x_udc.h
+@@ -121,6 +121,8 @@
+ 	void __iomem				*regs;
+ 	int					usb_irq;
+ 	int					usb_disc_irq;
++	struct delayed_work			vbus_work;
++	bool					poll_vbus;
+ };
+ #define to_pxa25x(g)	(container_of((g), struct pxa25x_udc, gadget))
+ 
+--- a/drivers/usb/gadget/udc/Kconfig
++++ b/drivers/usb/gadget/udc/Kconfig
+@@ -147,7 +147,6 @@
+ 	default n if USB_ETH_RNDIS
+ 	default y if USB_ZERO
+ 	default y if USB_ETH
+-	default y if USB_G_SERIAL
+ 
+ config USB_R8A66597
+ 	tristate "Renesas R8A66597 USB Peripheral Controller"

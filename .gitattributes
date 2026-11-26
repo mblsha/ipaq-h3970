@@ -1,0 +1,3 @@
+# Patch context prefixes and upstream whitespace are part of the patch format.
+*.patch -whitespace
+*.diff -whitespace

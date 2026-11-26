@@ -1,0 +1,98 @@
+--- a/i_timer.h
++++ b/i_timer.h
+@@ -20,6 +20,8 @@
+ #ifndef __I_TIMER__
+ #define __I_TIMER__
+ 
++#include <stdint.h>
++
+ #define TICRATE 35
+ 
+ // Called by D_DoomLoop,
+@@ -27,7 +29,7 @@
+ int I_GetTime (void);
+ 
+ // returns current time in ms
+-int I_GetTimeMS (void);
++int64_t I_GetTimeMS (void);
+ 
+ // Pause for a specified number of ms
+ void I_Sleep(int ms);
+--- a/d_loop.c
++++ b/d_loop.c
+@@ -118,9 +118,7 @@
+ 
+ static int GetAdjustedTime(void)
+ {
+-    int time_ms;
+-
+-    time_ms = I_GetTimeMS();
++    int64_t time_ms = I_GetTimeMS();
+ 
+     if (new_sync)
+     {
+--- a/i_timer.c
++++ b/i_timer.c
+@@ -27,49 +27,26 @@
+ //#include <unistd.h>
+ 
+ 
+-//
+-// I_GetTime
+-// returns time in 1/35th second tics
+-//
++// Accumulate deltas so the platform's 32-bit tick counter can wrap.
++static uint32_t previous_ticks;
++static int64_t elapsed_ms;
++static boolean have_ticks;
+ 
+-static uint32_t basetime = 0;
+-
+-
+-int I_GetTicks(void)
++int64_t I_GetTimeMS(void)
+ {
+-	return DG_GetTicksMs();
++    uint32_t ticks = DG_GetTicksMs();
++    if (have_ticks)
++        elapsed_ms += (uint32_t)(ticks - previous_ticks);
++    have_ticks = true;
++    previous_ticks = ticks;
++    return elapsed_ms;
+ }
+ 
+-int  I_GetTime (void)
++int I_GetTime(void)
+ {
+-    uint32_t ticks;
+-
+-    ticks = I_GetTicks();
+-
+-    if (basetime == 0)
+-        basetime = ticks;
+-
+-    ticks -= basetime;
+-
+-    return (ticks * TICRATE) / 1000;
++    return (I_GetTimeMS() * TICRATE) / 1000;
+ }
+ 
+-
+-//
+-// Same as I_GetTime, but returns time in milliseconds
+-//
+-
+-int I_GetTimeMS(void)
+-{
+-    uint32_t ticks;
+-
+-    ticks = I_GetTicks();
+-
+-    if (basetime == 0)
+-        basetime = ticks;
+-
+-    return ticks - basetime;
+-}
+ 
+ // Sleep for a specified number of ms
+ 

@@ -1,0 +1,165 @@
+diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
+index f9592bc14ed8..f668c811127d 100644
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -1174,6 +1174,15 @@ config MMC_H3970_ASIC3
+ 	  Firmware with a completion IRQ uses the TMIO request engine; existing
+ 	  descriptions without an IRQ retain polling and the same limits.
+ 
++config MMC_H3970_ASIC3_WRITE
++	bool "Enable single-block writes on the Compaq ASIC3 TMIO host"
++	depends on MMC_H3970_ASIC3
++	help
++	  Allow ordinary 512-byte SD writes through the TMIO request engine.
++	  The driver checks the socket write-protect signal. Erase and card
++	  configuration commands remain fenced. Leave this disabled for RAM
++	  bring-up and read-only recovery kernels.
++
+ config MMC_H3970_ASIC3_KUNIT_TEST
+ 	bool "KUnit tests for ASIC3 SD contracts and TMIO comparison" if !KUNIT_ALL_TESTS
+ 	depends on KUNIT && MMC_H3970_ASIC3=y
+diff --git a/drivers/mmc/host/asic3-sd.h b/drivers/mmc/host/asic3-sd.h
+index 9ef385cbc13c..0412d8182664 100644
+--- a/drivers/mmc/host/asic3-sd.h
++++ b/drivers/mmc/host/asic3-sd.h
+@@ -6,9 +6,10 @@
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/mmc.h>
+ 
+-/* Read-only, single-block contract for ASIC3 development hosts. */
+-static inline int asic3_sd_validate_readonly_request(const struct mmc_request *mrq,
+-						     unsigned int max_block_size)
++/* Permit ordinary single-block I/O and fence other mutating commands. */
++static inline int asic3_sd_validate_request(const struct mmc_request *mrq,
++					   unsigned int max_block_size,
++					   bool allow_write)
+ {
+ 	const struct mmc_command *cmd = mrq->cmd;
+ 	const struct mmc_data *data = mrq->data;
+@@ -16,6 +17,13 @@ static inline int asic3_sd_validate_readonly_request(const struct mmc_request *m
+ 	/* Hardware command indices are six bits; reject encoded aliases. */
+ 	if (cmd->opcode > 63)
+ 		return -EINVAL;
++	if (allow_write && cmd->opcode == MMC_WRITE_BLOCK && data &&
++	    (data->flags & (MMC_DATA_READ | MMC_DATA_WRITE)) == MMC_DATA_WRITE) {
++		if (data->blksz != 512 || data->blocks != 1 ||
++		    data->blksz > max_block_size)
++			return -EINVAL;
++		return 0;
++	}
+ 	if (data && (data->flags & MMC_DATA_WRITE))
+ 		return -EROFS;
+ 
+@@ -43,4 +51,10 @@ static inline int asic3_sd_validate_readonly_request(const struct mmc_request *m
+ 	return 0;
+ }
+ 
++static inline int asic3_sd_validate_readonly_request(const struct mmc_request *mrq,
++						    unsigned int max_block_size)
++{
++	return asic3_sd_validate_request(mrq, max_block_size, false);
++}
++
+ #endif
+diff --git a/drivers/mmc/host/compaq-asic3-mmc.c b/drivers/mmc/host/compaq-asic3-mmc.c
+index 124c898e70e4..f11fbd7700c4 100644
+--- a/drivers/mmc/host/compaq-asic3-mmc.c
++++ b/drivers/mmc/host/compaq-asic3-mmc.c
+@@ -41,7 +41,7 @@ struct asic3_tmio {
+ 	u16 bounce[256];
+ 	u64 request_seq;
+ 	int irq;
+-	bool polling;
++	bool polling, writable;
+ 	bool stopping, registered, pinned, prepared, irq_enabled;
+ };
+ 
+@@ -50,11 +50,19 @@ static struct asic3_tmio *asic3_tmio_priv(struct tmio_mmc_host *host)
+ 	return container_of(host->pdata, struct asic3_tmio, pdata);
+ }
+ 
++static int asic3_tmio_get_ro(struct mmc_host *mmc)
++{
++	struct asic3_tmio *priv = asic3_tmio_priv(mmc_priv(mmc));
++
++	return !priv->writable ||
++	       !(readw(priv->asic.regs + SD_STATUS) & TMIO_STAT_WRPROTECT);
++}
++
+ static void asic3_tmio_configure_host(struct tmio_mmc_host *host)
+ {
+ 	/* Firmware was validated before host_probe; reapply after generic caps. */
+ 	asic3_sd_configure_mmc(host->mmc);
+-	host->ops.get_ro = asic3_sd_get_ro;
++	host->ops.get_ro = asic3_tmio_get_ro;
+ }
+ 
+ static int asic3_tmio_clk_enable(struct tmio_mmc_host *host)
+@@ -130,7 +138,7 @@ static void asic3_tmio_done(struct mmc_request *mrq)
+ 			data->error = -EIO;
+ 			data->bytes_xfered = 0;
+ 		}
+-		if (!mrq->cmd->error && !data->error) {
++		if (!mrq->cmd->error && !data->error && (data->flags & MMC_DATA_READ)) {
+ 			data->bytes_xfered = sg_copy_from_buffer(data->sg, data->sg_len,
+ 							    priv->bounce, data->blksz);
+ 			if (data->bytes_xfered != data->blksz)
+@@ -147,12 +155,12 @@ static void asic3_tmio_done(struct mmc_request *mrq)
+ 		done(mrq);
+ }
+ 
+-static int asic3_tmio_validate_request(struct mmc_request *mrq)
++static int asic3_tmio_validate_request(struct mmc_request *mrq, bool writable)
+ {
+ 	struct mmc_data *data = mrq->data;
+ 	struct scatterlist *sg;
+ 	unsigned int i, size = 0;
+-	int ret = asic3_sd_validate_readonly_request(mrq, 512);
++	int ret = asic3_sd_validate_request(mrq, 512, writable);
+ 
+ 	if (ret)
+ 		return ret;
+@@ -195,6 +203,17 @@ static void asic3_tmio_work(struct work_struct *work)
+ 		mrq->cmd->error = -ENODEV;
+ 		goto done;
+ 	}
++	if (data && (data->flags & MMC_DATA_WRITE)) {
++		if (asic3_tmio_get_ro(priv->host->mmc)) {
++			mrq->cmd->error = -EROFS;
++			goto done;
++		}
++		if (sg_copy_to_buffer(data->sg, data->sg_len, priv->bounce,
++				      data->blksz) != data->blksz) {
++			mrq->cmd->error = -EIO;
++			goto done;
++		}
++	}
+ 	mrq->cmd->error = read_poll_timeout(readw, status, !(status & BUFFER_BUSY),
+ 					   30, 300000, false, priv->asic.regs + SD_BUFFER_STATUS);
+ 	if (mrq->cmd->error)
+@@ -240,7 +259,7 @@ static void asic3_tmio_request(struct mmc_host *mmc, struct mmc_request *mrq)
+ {
+ 	struct asic3_tmio *priv = asic3_tmio_priv(mmc_priv(mmc));
+ 	unsigned long flags;
+-	int ret = asic3_tmio_validate_request(mrq);
++	int ret = asic3_tmio_validate_request(mrq, priv->writable);
+ 
+ 	if (ret)
+ 		goto fail;
+@@ -287,7 +306,7 @@ static void asic3_tmio_init(struct asic3_tmio *priv, struct tmio_mmc_host *host)
+ 	host->write_command = asic3_tmio_write_command;
+ 	host->configure_host = asic3_tmio_configure_host;
+ 	host->ops.request = asic3_tmio_request;
+-	host->ops.get_ro = asic3_sd_get_ro;
++	host->ops.get_ro = asic3_tmio_get_ro;
+ }
+ 
+ static int asic3_tmio_probe(struct platform_device *pdev, int irq)
+@@ -307,6 +326,7 @@ static int asic3_tmio_probe(struct platform_device *pdev, int irq)
+ 		return -ENOMEM;
+ 	priv->irq = irq;
+ 	priv->polling = !irq;
++	priv->writable = IS_ENABLED(CONFIG_MMC_H3970_ASIC3_WRITE);
+ 	priv->pdata.flags = TMIO_MMC_ABORT_DATA_ON_CMD_ERROR | TMIO_MMC_KEEP_POWER;
+ 	priv->pdata.ocr_mask = MMC_VDD_32_33 | MMC_VDD_33_34;
+ 	regs = devm_platform_ioremap_resource(pdev, 0);

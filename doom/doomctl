@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+pidfile=/tmp/doom.pid
+
+running() {
+    [ -r "$pidfile" ] && read -r pid <"$pidfile" || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(/bin/busybox readlink "/proc/$pid/exe")" = /doom/doom-fb ]
+}
+
+case "${1:-}" in
+    start)
+        if running; then
+            echo "Doom is already running as PID $pid"
+            exit 0
+        fi
+        cd /doom
+        case "${2:-${doom_audio:-0}}" in
+            0) set -- -nosound ;;
+            1|--audio) set -- ;;
+            effects|--effects) set -- -nomusic ;;
+            music|--music) set -- -nosfx ;;
+            *) echo 'Usage: doomctl start [--audio|--effects|--music]' >&2; exit 2 ;;
+        esac
+        /bin/busybox setsid ./doom-fb -iwad doom1.wad -config /tmp/doom.cfg \
+            -extraconfig /tmp/doom-extra.cfg "$@" </dev/null >/dev/ttyS0 2>&1 &
+        pid=$!
+        printf '%s\n' "$pid" >"$pidfile"
+        echo "Started Doom as PID $pid"
+        ;;
+    stop)
+        if running; then
+            kill -TERM "$pid"
+            for tick in 1 2 3 4 5; do
+                running || break
+                /bin/busybox sleep 1
+            done
+            if running; then
+                echo "Doom did not exit after SIGTERM" >&2
+                exit 1
+            fi
+        fi
+        rm -f "$pidfile"
+        echo 'Doom stopped'
+        ;;
+    status)
+        if running; then
+            echo "Doom is running as PID $pid"
+        else
+            echo 'Doom is stopped'
+            exit 1
+        fi
+        ;;
+    *)
+        echo 'Usage: doomctl start [--audio|--effects|--music] | stop | status' >&2
+        exit 2
+        ;;
+esac

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fallback for an independently booted kernel without the Doom initramfs.
+export PATH=/bin HOME=/tmp
+busybox mount -t devtmpfs devtmpfs /dev
+busybox mount -t proc proc /proc
+busybox mount -t sysfs sysfs /sys
+echo 'H3970 RAM shell'
+exec /bin/sh -i

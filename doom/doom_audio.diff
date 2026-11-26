@@ -1,0 +1,25 @@
+--- a/i_sound.c
++++ b/i_sound.c
+@@ -19,5 +19,5 @@
+ #include <stdlib.h>
+ 
+-#if defined(FEATURE_SOUND) && !defined(__DJGPP__)
++#if defined(FEATURE_SOUND) && !defined(H3970_PCM) && !defined(__DJGPP__)
+ #include <SDL_mixer.h>
+ #endif
+@@ -131,5 +131,7 @@
+ static void InitMusicModule(void)
+ {
+-#ifdef FEATURE_SOUND
++#if defined(H3970_PCM)
++    music_module = &music_opl_module;
++#elif defined(FEATURE_SOUND)
+     music_module = &DG_music_module;
+ #endif /* FEATURE_SOUND */
+@@ -409,5 +409,5 @@
+     M_BindVariable("snd_cachesize",     &snd_cachesize);
+ 
+-#ifdef FEATURE_SOUND
++#if defined(FEATURE_SOUND) && !defined(H3970_PCM)
+     M_BindVariable("use_libsamplerate",   &use_libsamplerate);
+     M_BindVariable("libsamplerate_scale", &libsamplerate_scale);
