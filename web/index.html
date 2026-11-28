@@ -20,11 +20,17 @@
         <label>ActiveSync password <span>(optional)</span>
           <input id="password" type="password" autocomplete="off" maxlength="127">
         </label>
-        <button id="connect">Connect WinCE</button>
-        <button id="connect-linux" class="secondary">Connect Linux</button>
-        <button id="disconnect" class="secondary" disabled>Disconnect</button>
+        <button id="connect">Connect iPAQ</button>
+        <button id="disconnect" class="secondary" disabled hidden>Disconnect</button>
       </div>
-      <p id="device" aria-live="polite">Disconnected</p>
+      <p id="device" aria-live="polite">No iPAQ connected</p>
+      <div id="permissions" hidden>
+        <p>Choose the iPAQ’s current mode to grant browser access.</p>
+        <div class="button-row">
+          <button id="allow-wince" class="secondary">WinCE USB</button>
+          <button id="allow-linux" class="secondary">Linux serial</button>
+        </div>
+      </div>
     </section>
     <div class="actions">
       <section aria-labelledby="upload-heading">
@@ -41,7 +47,7 @@
       </section>
       <section aria-labelledby="linux-heading">
         <h2 id="linux-heading">While Doom is running</h2>
-        <p>Grant Linux serial access when prompted. Changing audio restarts the demo.</p>
+        <p>Changing audio restarts the demo.</p>
         <div class="button-row">
           <button id="audio-on" class="secondary" disabled>Enable audio</button>
           <button id="audio-off" class="secondary" disabled>Disable audio</button>

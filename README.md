@@ -13,25 +13,21 @@ Open the [hosted iPAQ tools](https://mblsha.github.io/ipaq-h3970/) in
 Chromium with the native dock attached. Close any other ActiveSync or
 serial session using the dock.
 
-- With WinCE running, choose **Install and start Doom** and approve the
-  WinCE USB connection if prompted. The page selects a published kit,
-  verifies the download and WinCE read-back, and starts the RAM launcher.
-- When Doom appears, choose **Connect Linux** and grant Web Serial access
-  on the same cable if Chromium requests permission. The page remembers
-  the connection while it is open and reads live state on reload or
-  reconnect when Chromium has permission. **Enable audio** and **Disable
-  audio** restart the demo when the setting changes. **Restart demo**
-  starts the demo again with the current audio mode. The **Music** and
-  **Sound effects** sliders change the live mix. **Reset to WinCE**
-  reboots to stock WinCE. The page saves valid touch calibration before
-  booting Linux and restores it to return to Today. Reset is available
-  when this tab has a calibration backup for the running Linux boot.
-  Complete setup on the handheld once to prepare that backup. If Chromium
-  needs a new permission after reset, choose **Connect WinCE** so the page
-  can finish restoring Today. If Linux USB stops responding, reconnect the
-  cable and choose **Connect Linux** again.
-- Use **Connect WinCE** for **Dump ROM** or to stage a different kit.
-  The ROM image is saved by the browser on your computer.
+- The page automatically detects WinCE or Linux when Chromium has access.
+  Use **Connect iPAQ** to grant initial access for the mode on the screen.
+- From WinCE, choose **Install and start Doom**. The page verifies the
+  published kit, starts the RAM launcher, and follows the switch to Linux.
+  It also reconnects on a browser reload or USB replug. If Chromium needs
+  permission during a switch, the connection button offers the matching
+  USB or serial permission and the page resumes from the device's reply.
+- **Enable audio** and **Disable audio** restart the demo when the setting
+  changes. **Restart demo** keeps the current audio mode. **Music** and
+  **Sound effects** adjust the live mix.
+- **Reset to WinCE** requires a calibration backup for the running Linux
+  boot. Complete setup on the handheld once, then install Doom in the same
+  tab to save it. The page restores the backup and opens Today after reset.
+- In WinCE, use **Dump ROM** to save the ROM to your computer, or
+  **Use your own kit** to stage other files.
 
 To run the page locally, build the static site with Rust's `wasm32-unknown-unknown` target, Python
 3.11+, and ARM GNU Embedded GCC and binutils.
