@@ -130,6 +130,17 @@ export class LinuxConsole {
         await this.command("/bin/busybox sync && { ( /bin/busybox sleep 1; /bin/busybox reboot -f ) </dev/null >/dev/null 2>&1 & }");
     }
 
+    async restartDemo() {
+        const {audio} = await this.snapshot();
+        const option = {on: "--audio", off: "0", effects: "--effects", music: "--music"}[audio];
+        await this.command("/doom/doomctl stop && /doom/doomctl start " + option);
+        await sleep(400);
+        const state = await this.snapshot();
+        if (state.doom !== "running" || state.audio !== audio) {
+            throw new Error("Doom did not restart in the requested audio mode");
+        }
+    }
+
     async close() {
         await this.reader.cancel().catch(() => {});
         await this.reading;

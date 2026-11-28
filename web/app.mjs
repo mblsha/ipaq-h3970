@@ -8,7 +8,8 @@ const byId = id => document.getElementById(id);
 const connect = byId("connect"), disconnect = byId("disconnect"),
     connectLinux = byId("connect-linux"), install = byId("install"), kitVersion = byId("kit-version"),
     kitRelease = byId("kit-release"),
-    audioOn = byId("audio-on"), audioOff = byId("audio-off"), reset = byId("reset"),
+    audioOn = byId("audio-on"), audioOff = byId("audio-off"),
+    restart = byId("restart"), reset = byId("reset"),
     dump = byId("dump"), upload = byId("upload"),
     image = byId("image"), launcher = byId("launcher"),
     status = byId("status"), meter = byId("progress"), hashes = byId("hashes"),
@@ -16,7 +17,7 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
     download = byId("download");
 
 let transport, rapi, linux, kit, busy = false, romUrl;
-let snapshot, transition, paused = false, watchTimer, retryAt = 0;
+let snapshot, transition, paused = false, watchTimer, watchTask, retryAt = 0;
 const available = window.isSecureContext && navigator.usb;
 const serial = window.isSecureContext && navigator.serial;
 const kitFiles = ["DOOMUSB.BIN", "DOOMUSB.EXE"];
@@ -27,15 +28,16 @@ const stageLabels = {
 const kib = value => Math.floor(value / 1024).toLocaleString();
 
 function controls() {
-    connect.disabled = busy || Boolean(transport || linux) || !available;
-    connectLinux.disabled = busy || Boolean(transport || linux) || !serial;
+    const connecting = watchTask && !rapi && !linux;
+    connect.disabled = busy || connecting || Boolean(transport || linux) || !available;
+    connectLinux.disabled = busy || connecting || Boolean(transport || linux) || !serial;
     disconnect.disabled = busy || !(transport || linux);
-    install.disabled = busy || Boolean(linux || transition) || !available || !kit;
+    install.disabled = busy || connecting || Boolean(linux || transition) || !available || !kit;
     dump.disabled = busy || !rapi;
     upload.disabled = busy || !rapi || !image.files.length || !launcher.files.length;
     password.disabled = busy || Boolean(transport);
     image.disabled = launcher.disabled = busy;
-    audioOn.disabled = audioOff.disabled = busy || !linux || !snapshot;
+    audioOn.disabled = audioOff.disabled = restart.disabled = busy || !linux || !snapshot;
     reset.disabled = busy || !linux || !snapshot?.reset;
 }
 
@@ -56,6 +58,7 @@ async function perform(action) {
     controls();
     delete status.dataset.stage;
     try {
+        if (watchTask) await watchTask;
         await action();
     } catch (error) {
         status.textContent = error.message || String(error);
@@ -136,6 +139,11 @@ async function refreshLinux() {
     const audio = {off: "Muted", on: "Audio on", effects: "Effects only", music: "Music only"};
     device.textContent = "H3970 Linux" + kitLabel + " · Doom " + snapshot.doom +
         (snapshot.doom === "running" ? " · " + audio[snapshot.audio] : "");
+}
+
+function requireLinux() {
+    if (!linux || linux.disconnected) throw new Error("Reconnect the iPAQ in Linux first");
+    return linux;
 }
 
 async function openLinux(port) {
@@ -253,19 +261,27 @@ install.addEventListener("click", () => perform(async () => {
 for (const [button, enabled] of [[audioOn, true], [audioOff, false]]) {
     button.addEventListener("click", () => perform(async () => {
         status.textContent = "Changing Doom audio…";
-        await linux.setAudio(enabled);
+        await requireLinux().setAudio(enabled);
         await refreshLinux();
         status.textContent = enabled ? "Doom audio enabled" : "Doom audio disabled";
     }));
 }
 
+restart.addEventListener("click", () => perform(async () => {
+    status.textContent = "Restarting the Doom demo…";
+    await requireLinux().restartDemo();
+    await refreshLinux();
+    status.textContent = "Doom demo restarted";
+}));
+
 reset.addEventListener("click", () => perform(async () => {
+    const connection = requireLinux();
     status.textContent = "Resetting the iPAQ to WinCE…";
     transition = {target: "wince", boot: snapshot.boot, deadline: Date.now() + 20000};
     try {
-        await linux.reboot();
+        await connection.reboot();
     } catch (error) {
-        if (!linux.disconnected) {
+        if (!connection.disconnected) {
             transition = null;
             throw error;
         }
@@ -353,15 +369,16 @@ function scheduleDiscovery(delay = 0) {
     clearTimeout(watchTimer);
     if (!available && !serial) return;
     watchTimer = setTimeout(async () => {
-        if (!paused && !busy) {
-            await perform(async () => {
-                try {
-                    await discover();
-                } catch (error) {
-                    await endConnection();
-                    throw error;
-                }
+        if (!paused && !busy && !watchTask) {
+            watchTask = discover().catch(async error => {
+                await endConnection();
+                status.textContent = error.message || String(error);
+            }).finally(() => {
+                watchTask = null;
+                controls();
             });
+            controls();
+            await watchTask;
         }
         scheduleDiscovery(transition ? 500 : 3500);
     }, delay);
