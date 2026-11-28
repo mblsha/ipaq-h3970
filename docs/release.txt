@@ -7,7 +7,10 @@ iPAQ H3970 Linux and Doom RAM-boot kit
 
 Linux boots in RAM and starts the Doom shareware demo in portrait mode
 with audio muted. Keep the EXE and BIN together. They are built as a pair.
-The Linux USB console uses CDC ACM. A soft reset returns to stock WinCE.
+The Linux USB console uses CDC ACM. When launched from calibrated WinCE,
+the kit keeps a copy of the touch calibration in Linux RAM. Keep the web
+page connected and use Reset to WinCE or run return-wince in BusyBox to
+restore the calibration and reopen Today.
 
 SHA256SUMS checks the payload, launcher and device tree. The build manifest
 records source pins, toolchains, build settings and input hashes. The

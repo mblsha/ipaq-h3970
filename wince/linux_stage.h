@@ -6,6 +6,8 @@
 #define DECOMPRESS_WORKSPACE 0x00100000u
 _Static_assert(PAGE_LIST_OFFSET * sizeof(U32) + LINUX_PAGES * sizeof(U16) <= PAGE_BYTES,
                "Linux scatter list must fit in one page");
+_Static_assert(LINUX_CALIBRATION_PROP + LINUX_CALIBRATION_SIZE <= LINUX_KERNEL_OFFSET,
+               "The calibration field must fit before the kernel");
 
 typedef struct {
     unsigned char *data;
@@ -14,6 +16,32 @@ typedef struct {
     U32 table_phys;
     int data_locked, table_locked;
 } LinuxStage;
+
+static void stage_calibration(unsigned char *field)
+{
+    for (U32 i = 0; i < LINUX_CALIBRATION_SIZE; ++i)
+        field[i] = 0;
+
+    Handle key;
+    if (ce_RegOpenKeyExW((Handle)0x80000002u, L"HARDWARE\\DEVICEMAP\\TOUCH", 0, 0, &key))
+        return;
+    Wide value[LINUX_CALIBRATION_SIZE - 1];
+    U32 type = 0, bytes = sizeof(value);
+    int status = ce_RegQueryValueExW(key, L"CalibrationData", 0, &type, value, &bytes);
+    ce_RegCloseKey(key);
+    if (status || type != 1 || bytes < 24 || bytes > sizeof(value) || bytes % sizeof(Wide))
+        return;
+    const U32 length = bytes / sizeof(Wide) - 1;
+    if (value[length])
+        return;
+    for (U32 i = 0; i < length; ++i)
+        if ((value[i] < '0' || value[i] > '9') &&
+            value[i] != ',' && value[i] != '-' && value[i] != ' ' && value[i] != '\t')
+            return;
+    for (U32 i = 0; i < length; ++i)
+        field[i] = (unsigned char)value[i];
+    field[length] = '\n';
+}
 
 #if !LINUX_SIBLING && !defined(LINUX_PATH)
 #define LINUX_PATH L"\\Storage Card\\LINUX.BIN"
@@ -87,6 +115,7 @@ static const Wide *prepare_linux(LinuxStage *stage, Handle port, U32 *value)
     if (*value != LINUX_CRC32)
         return L"LINUX.BIN CRC mismatch";
     trace(port, L"H3970 verified Linux SD CRC", *value);
+    stage_calibration(stage->data + LINUX_CALIBRATION_PROP);
 
     stage->data_locked = ce_LockPages(stage->data, LINUX_ROUNDED,
                                       stage->pfns, 1);

@@ -23,6 +23,9 @@ extern int (*const ce_GetCommState)(Handle, TraceDcb *);
 extern int (*const ce_SetCommState)(Handle, TraceDcb *);
 extern int (*const ce_WriteFile)(Handle, const void *, U32, U32 *, void *);
 extern void (*const ce_Sleep)(U32);
+extern int (*const ce_RegOpenKeyExW)(Handle, const Wide *, U32, U32, Handle *);
+extern int (*const ce_RegQueryValueExW)(Handle, const Wide *, U32 *, U32 *, void *, U32 *);
+extern int (*const ce_RegCloseKey)(Handle);
 
 static Handle open_trace(TraceDcb *saved)
 {

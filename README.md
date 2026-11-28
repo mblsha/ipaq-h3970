@@ -13,8 +13,9 @@ Open the [hosted iPAQ tools](https://mblsha.github.io/ipaq-h3970/) in
 Chromium with the native dock attached. Close any other ActiveSync or
 serial session using the dock.
 
-- The page automatically detects WinCE or Linux when Chromium has access.
-  Use **Connect iPAQ** to grant initial access for the mode on the screen.
+- Choose **Connect iPAQ** and select the handheld in Chromium's device
+  picker. The page detects WinCE or Linux. If Chromium asks for serial
+  permission on Linux, choose **Allow Linux serial access**.
 - From WinCE, choose **Install and start Doom**. The page verifies the
   published kit, starts the RAM launcher, and follows the switch to Linux.
   It also reconnects on a browser reload or USB replug. If Chromium needs
@@ -27,9 +28,12 @@ serial session using the dock.
   portrait BusyBox terminal. The browser sends keyboard input over the
   same USB cable and displays the shell output alongside the iPAQ LCD.
   Choose **Start demo** to return to Doom in the same Linux boot.
-- **Reset to WinCE** requires a calibration backup for the running Linux
-  boot. Complete setup on the handheld once, then install Doom in the same
-  tab to save it. The page restores the backup and opens Today after reset.
+- Boot the kit from calibrated WinCE to save the handheld's touch settings
+  in Linux RAM. A new tab or browser can read the backup while Linux is
+  running. Choose **Reset to WinCE** or run `return-wince` at the BusyBox
+  prompt. Leave the page connected over USB so it can take the backup before
+  rebooting, restore it in WinCE, and open Today. The shell request expires
+  after a minute if a connected page has not picked it up.
 - Open **WinCE tools** to save the ROM to your computer or stage a
   custom kit.
 

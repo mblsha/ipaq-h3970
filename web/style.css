@@ -33,8 +33,6 @@ h2 { font-size: 1.13rem; font-weight: 650; }
 #device { margin-top: .35rem; }
 .muted { color: var(--muted); font-size: .875rem; }
 .button-row { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
-#permissions { margin-bottom: 1.25rem; }
-#permissions p { margin-bottom: .55rem; }
 .installer, .doom-controls {
     padding: 1rem;
     background: #fff;

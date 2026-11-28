@@ -14,3 +14,4 @@ if /bin/busybox reboot --help >/dev/null 2>&1; then
 else
     echo reset=no
 fi
+/doom/return-wince pending

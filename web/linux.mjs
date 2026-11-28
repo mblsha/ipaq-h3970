@@ -1,6 +1,8 @@
 import {hex, sleep} from "./bytes.mjs";
+import {isCalibration} from "./rapi.mjs";
 
 export const LINUX_USB = {usbVendorId: 0x0525, usbProductId: 0xa4a7};
+const winCeBackup = "/tmp/h3970-wince-calibration";
 const identity = "/bin/busybox grep -aqF hp,ipaq-h3970 /sys/firmware/devicetree/base/compatible && test -x /doom/doomctl";
 const statusCommand = [
     "/bin/busybox printf 'boot=%s\\nkit=%s\\n' " +
@@ -129,8 +131,48 @@ export class LinuxConsole {
         const mix = rawMix && rawMix.slice(1).map(Number);
         if (!boot || !kit || !doom || !reset) throw new Error("Linux returned an invalid Doom status");
         if (mix && mix.some(level => level > 100)) throw new Error("Linux returned invalid volume levels");
-        return {boot, kit, doom: doom[1], audio: doom[2], mix, reset: reset === "yes",
+        const returnRequest = /^return_request=([1-9]\d{0,9}\.[A-Za-z0-9]{6})$/m.exec(output)?.[1];
+        return {boot, kit, doom: doom[1], audio: doom[2], mix, reset: reset === "yes", returnRequest,
             terminal: /^terminal=yes$/m.test(output)};
+    }
+
+    async readWinCeCalibration() {
+        const encoded = await this.command("if test -s " + winCeBackup +
+            "; then /bin/busybox dd if=" + winCeBackup + " bs=384 count=1 2>/dev/null | /bin/busybox base64; fi", 3500);
+        if (!encoded) return null;
+        try {
+            const decoder = new TextDecoder("utf-8", {fatal: true});
+            const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+            const [value, serialHex, end, ...extra] = decoder.decode(bytes).split("\n");
+            if (end !== "" || extra.length || !isCalibration(value) ||
+                !/^(?:[a-f0-9]{2}){0,128}$/.test(serialHex)) return null;
+            const serial = decoder.decode(Uint8Array.from(serialHex.match(/../g) ?? [], byte => parseInt(byte, 16)));
+            return {value, serial};
+        } catch {
+            return null;
+        }
+    }
+
+    async saveWinCeCalibration({value, serial}) {
+        if (!isCalibration(value)) throw new Error("Invalid WinCE calibration");
+        const encoder = new TextEncoder();
+        const pointString = value.replace(/[\r\n]/g, " ");
+        const serialHex = hex(encoder.encode(serial ?? ""));
+        if (serialHex.length > 256) throw new Error("Invalid WinCE device serial");
+        const encoded = btoa(String.fromCharCode(...encoder.encode(pointString + "\n" + serialHex + "\n")));
+        await this.command("umask 077; tmp=$(/bin/busybox mktemp " + winCeBackup +
+            ".XXXXXX) && { printf %s " + encoded + " | /bin/busybox base64 -d >\"$tmp\" && " +
+            "/bin/busybox mv -f \"$tmp\" " + winCeBackup + " || { /bin/busybox rm -f \"$tmp\"; false; }; }");
+        const saved = await this.readWinCeCalibration();
+        if (saved?.value !== pointString || saved.serial !== (serial ?? "")) {
+            throw new Error("The iPAQ did not verify its calibration backup");
+        }
+        return saved;
+    }
+
+    async claimWinCeReturn(token) {
+        if (!/^[1-9]\d{0,9}\.[A-Za-z0-9]{6}$/.test(token)) throw new Error("Invalid reset request");
+        await this.command("/doom/return-wince claim " + token);
     }
 
     async exchangeTerminal(position, input) {

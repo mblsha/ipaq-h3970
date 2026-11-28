@@ -8,7 +8,6 @@ import {SharedTerminal} from "./terminal.mjs";
 
 const byId = id => document.getElementById(id);
 const connect = byId("connect"), disconnect = byId("disconnect"),
-    permissions = byId("permissions"), allowWinCe = byId("allow-wince"), allowLinux = byId("allow-linux"),
     releasePanel = byId("release-panel"), winCeTools = byId("wince-tools"),
     passwordField = byId("password-field"), install = byId("install"), kitVersion = byId("kit-version"),
     kitRelease = byId("kit-release"),
@@ -24,7 +23,7 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
 
 let transport, rapi, linux, kit, busy = false, romUrl;
 let snapshot, transition, bootCalibration, paused = false, watchTimer, watchTask, retryAt = 0;
-let showPermissions = false, connectedBefore = false;
+let linuxUsbSeen = false, connectedBefore = false, handledReturnRequest;
 let lastLinuxStatus = 0, terminalPending = false;
 const sharedTerminal = new SharedTerminal(byId("terminal-screen"), terminalStatus, () => {
     terminalPending = true;
@@ -35,6 +34,7 @@ const transitionKey = "h3970-pending-return";
 const calibrationGrace = 120000;
 const available = window.isSecureContext && navigator.usb;
 const serial = window.isSecureContext && navigator.serial;
+const linuxUsb = {vendorId: LINUX_USB.usbVendorId, productId: LINUX_USB.usbProductId};
 const kitFiles = ["DOOMUSB.BIN", "DOOMUSB.EXE"];
 const stageLabels = {
     dump: "Dumping WinCE ROM", upload: "Uploading Linux Doom", verify: "Verifying Linux Doom",
@@ -76,16 +76,14 @@ function controls() {
     const connected = Boolean(transport || linux);
     const connecting = busy || (watchTask && !rapi && !linux);
     const target = transition?.target;
-    const canConnect = target === "linux" ? serial : target === "wince" ? available : available || serial;
+    const mode = target ?? (linuxUsbSeen ? "linux" : undefined);
+    const canConnect = mode === "linux" ? serial : mode === "wince" ? available : available || serial;
     const inLinux = Boolean(linux && snapshot);
     const running = inLinux && snapshot.doom === "running";
-    connect.textContent = target === "linux" ? "Allow Linux serial access" :
-        target === "wince" ? "Allow WinCE USB access" : "Connect iPAQ";
+    connect.textContent = mode === "linux" ? "Allow Linux serial access" :
+        mode === "wince" ? "Allow WinCE USB access" : "Connect iPAQ";
     connect.disabled = connecting || connected || !canConnect;
     connect.hidden = connected;
-    permissions.hidden = !showPermissions || connected || Boolean(target);
-    allowWinCe.disabled = connecting || !available;
-    allowLinux.disabled = connecting || !serial;
     disconnect.disabled = busy || !(transport || linux);
     disconnect.hidden = !connected;
     releasePanel.hidden = Boolean(linux || transition) || !available;
@@ -108,12 +106,13 @@ function controls() {
     if (terminalPanel.hidden) sharedTerminal.stop();
     start.hidden = !inLinux || running;
     start.disabled = busy || start.hidden;
-    const canReturn = inLinux && snapshot.reset && calibrationForBoot();
-    reset.disabled = busy || !canReturn;
+    const canReturn = inLinux && snapshot.reset && available && calibrationForBoot();
+    reset.disabled = busy || Boolean(transition) || !canReturn;
     resetHint.hidden = !inLinux || Boolean(canReturn);
-    resetHint.textContent = resetHint.hidden ? "" : snapshot.reset
-        ? "Start Doom from calibrated WinCE in this tab to enable reset."
-        : "This kit cannot reset to WinCE.";
+    resetHint.textContent = resetHint.hidden ? "" :
+        !snapshot.reset ? "This kit cannot reset to WinCE." :
+        !available ? "WinCE recovery needs a browser with WebUSB access." :
+        "The iPAQ needs a saved touch calibration. Boot the kit from calibrated WinCE to capture it.";
 }
 
 function reportProgress({stage, done, total}) {
@@ -163,6 +162,7 @@ async function endConnection(options) {
 }
 
 const isWinCe = port => port.vendorId === IPAQ.vendorId && port.productId === IPAQ.productId;
+const isLinuxUsb = port => port.vendorId === linuxUsb.vendorId && port.productId === linuxUsb.productId;
 
 function releasedStem() {
     return "DOOM-" + kit.sha256["DOOMUSB.EXE"].slice(0, 12).toUpperCase();
@@ -211,7 +211,7 @@ async function openWinCe(port, pass = "") {
                 restore = transition.calibration;
             }
         }
-        setTransition(null);
+        if (!restore) setTransition(null);
     } catch (error) {
         await endConnection();
         throw error;
@@ -220,8 +220,14 @@ async function openWinCe(port, pass = "") {
         status.textContent = "Restoring calibration and opening WinCE Today…";
         try {
             await restoreToday(rapi, restore.value);
+            setTransition(null);
             status.textContent = "WinCE Today is ready";
         } catch (error) {
+            if (transport.error || !transport.device.opened) {
+                await endConnection();
+                throw error;
+            }
+            setTransition(null);
             status.textContent = "WinCE is connected. " + error.message;
         }
     }
@@ -290,16 +296,28 @@ function requireLinux() {
 
 async function openLinux(port) {
     linux = await LinuxConsole.connect(port);
+    let backupError;
     try {
         await refreshLinux();
+        const handoff = transition?.target === "linux" && transition.kit === snapshot.kit &&
+            isCalibration(transition.calibration?.value) ? transition.calibration : null;
+        const stored = await linux.readWinCeCalibration();
+        const saved = stored ?? handoff ?? calibrationForBoot();
+        if (saved && snapshot.boot !== "unknown") {
+            bootCalibration = {...saved, serial: saved.serial || handoff?.serial, boot: snapshot.boot};
+            saveSession(calibrationKey, bootCalibration);
+            if (!stored || (!stored.serial && bootCalibration.serial)) {
+                try {
+                    await linux.saveWinCeCalibration(bootCalibration);
+                } catch (error) {
+                    if (linux.disconnected) throw error;
+                    backupError = error;
+                }
+            }
+        }
     } catch (error) {
         await endConnection();
         throw error;
-    }
-    if (transition?.target === "linux" && isCalibration(transition.calibration?.value) &&
-        snapshot.boot !== "unknown" && transition.kit === snapshot.kit) {
-        bootCalibration = {...transition.calibration, boot: snapshot.boot};
-        saveSession(calibrationKey, bootCalibration);
     }
     if (transition?.target === "linux" && snapshot.kit !== "unknown" && transition.kit !== snapshot.kit) {
         status.textContent = "Linux answered with a different kit than requested.";
@@ -307,6 +325,8 @@ async function openLinux(port) {
         status.textContent = transition.boot !== "unknown" && transition.boot === snapshot.boot
             ? "Linux still answers on the previous boot. WinCE reset was not confirmed."
             : "Linux answered. WinCE reset was not confirmed.";
+    } else if (backupError) {
+        status.textContent = "Could not save calibration on the iPAQ. Keep this tab open to return to WinCE.";
     } else {
         status.textContent = "";
     }
@@ -318,6 +338,7 @@ async function permittedDevices() {
         available ? navigator.usb.getDevices() : [],
         serial ? serial.getPorts() : [],
     ]);
+    linuxUsbSeen = Boolean(serial && winDevices.some(isLinuxUsb) && !winDevices.some(isWinCe));
     return [
         ...winDevices.filter(isWinCe).map(port => ({mode: "wince", port})),
         ...serialPorts.filter(isLinuxPort).map(port => ({mode: "linux", port})),
@@ -339,7 +360,6 @@ async function openDevice({mode, port}) {
         await openLinux(port);
     }
     connectedBefore = true;
-    showPermissions = false;
 }
 
 async function connectDevice(mode = transition?.target) {
@@ -350,9 +370,16 @@ async function connectDevice(mode = transition?.target) {
         await openDevice(matches[0]);
         return;
     }
-    mode ??= !serial ? "wince" : !available ? "linux" : undefined;
+    mode ??= !serial ? "wince" : !available || linuxUsbSeen ? "linux" : undefined;
     if (!mode) {
-        showPermissions = true;
+        const port = await navigator.usb.requestDevice({filters: [IPAQ, linuxUsb]});
+        if (isWinCe(port)) {
+            await openDevice({mode: "wince", port});
+        } else if (isLinuxUsb(port)) {
+            linuxUsbSeen = true;
+            status.textContent = "Linux detected. Allow serial access to connect.";
+            if (navigator.userActivation?.isActive) await connectDevice("linux");
+        }
         return;
     }
     const serialNumber = mode === "wince" && transition?.calibration?.serial;
@@ -363,16 +390,14 @@ async function connectDevice(mode = transition?.target) {
     await openDevice({mode, port});
 }
 
-for (const [button, mode] of [[connect], [allowWinCe, "wince"], [allowLinux, "linux"]]) {
-    button.addEventListener("click", () => perform(async () => {
-        paused = false;
-        await connectDevice(mode);
-    }));
-}
+connect.addEventListener("click", () => perform(async () => {
+    paused = false;
+    await connectDevice();
+}));
 
 disconnect.addEventListener("click", () => perform(async () => {
     paused = true;
-    connectedBefore = showPermissions = false;
+    connectedBefore = false;
     setTransition(null);
     await endConnection();
     device.textContent = "Disconnected";
@@ -476,11 +501,13 @@ for (const button of [start, restart]) {
     }));
 }
 
-reset.addEventListener("click", () => perform(async () => {
+async function returnToWinCe(request) {
     const connection = requireLinux();
-    const calibration = calibrationForBoot();
+    if (!available || !snapshot?.reset) throw new Error("WinCE recovery needs WebUSB and a kit with reset support");
+    const calibration = await connection.readWinCeCalibration() ?? calibrationForBoot();
     if (!calibration) throw new Error("Reset requires saved calibration from this Linux boot");
     await prepareToday();
+    if (request) await connection.claimWinCeReturn(request);
     status.textContent = "Resetting the iPAQ to WinCE…";
     setTransition({target: "wince", boot: snapshot.boot, calibration, deadline: Date.now() + 20000});
     try {
@@ -495,7 +522,9 @@ reset.addEventListener("click", () => perform(async () => {
     showWaiting();
     status.textContent = "Waiting for a WinCE status reply…";
     scheduleDiscovery(250);
-}));
+}
+
+reset.addEventListener("click", () => perform(() => returnToWinCe(snapshot?.returnRequest)));
 
 async function loadRelease() {
     try {
@@ -528,6 +557,17 @@ async function discover() {
             return;
         } else {
             if (Date.now() - lastLinuxStatus >= 1100) await refreshLinux();
+            const request = snapshot.returnRequest;
+            if (!busy && request && request !== handledReturnRequest) {
+                handledReturnRequest = request;
+                try {
+                    await returnToWinCe(request);
+                } catch (error) {
+                    if (linux?.disconnected) throw error;
+                    status.textContent = error.message;
+                }
+                return;
+            }
             await refreshSharedTerminal();
             return;
         }

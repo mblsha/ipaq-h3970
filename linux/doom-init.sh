@@ -4,6 +4,10 @@ export PATH=/doom:/bin:/sbin HOME=/tmp
 /bin/busybox mount -t devtmpfs devtmpfs /dev
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
+calibration_node=/sys/firmware/devicetree/base/chosen/compaq,wince-calibration
+if [ -r "$calibration_node" ] && IFS= read -r calibration < "$calibration_node" && [ -n "$calibration" ]; then
+    (umask 077; printf '%s\n\n' "$calibration" > /tmp/h3970-wince-calibration)
+fi
 if /bin/busybox mkdir -p /dev/pts && /bin/busybox mount -t devpts devpts /dev/pts; then
     printf '1\n' > /sys/class/graphics/fbcon/rotate_all
     /doom/terminal serve </dev/null >/dev/ttyS0 2>&1 &

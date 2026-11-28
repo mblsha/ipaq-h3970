@@ -13,6 +13,7 @@ HERE = Path(__file__).resolve().parent
 PAGE = 4096
 START_MARKER = 0x109F7261
 END_MARKER = 0x20A1C456
+CALIBRATION_MARKER = b"H3970-TOUCH-CALIBRATION".ljust(96, b"\0")
 
 
 def align(n):
@@ -51,9 +52,13 @@ def pack(kernel_file, dtb_file, initrd_file, output):
             "fw_devlink=off doom_audio=0 h3970_usb_cold=1")
         for key, marker in (("linux,initrd-start", START_MARKER), ("linux,initrd-end", END_MARKER)):
             run("fdtput", "-t", "x", dtb_path, "/chosen", key, f"{marker:x}")
+        run("fdtput", "-t", "bx", dtb_path, "/chosen", "compaq,wince-calibration",
+            *(f"{byte:02x}" for byte in CALIBRATION_MARKER))
         dtb = dtb_path.read_bytes()
         if not 40 <= len(dtb) <= 65536 or struct.unpack_from(">2I", dtb) != (0xD00DFEED, len(dtb)):
             raise ValueError("Expected a complete H3970 DTB no larger than 64 KiB")
+        if dtb.count(CALIBRATION_MARKER) != 1:
+            raise ValueError("Expected one calibration field in the DTB")
         kernel_offset = align(len(dtb))
         # Reserve decompressor workspace after the zImage.
         initrd_offset = align(kernel_offset + len(kernel)) + (1 << 20)
@@ -77,6 +82,8 @@ def pack(kernel_file, dtb_file, initrd_file, output):
 #define LINUX_INITRD_BYTES {len(initrd)}u
 #define LINUX_INITRD_START_PROP {patch_offset(dtb, START_MARKER)}u
 #define LINUX_INITRD_END_PROP {patch_offset(dtb, END_MARKER)}u
+#define LINUX_CALIBRATION_PROP {dtb.index(CALIBRATION_MARKER)}u
+#define LINUX_CALIBRATION_SIZE {len(CALIBRATION_MARKER)}u
 #define LINUX_SIBLING 1
 """
         (work / "handoff_blob.h").write_text(
@@ -87,6 +94,7 @@ def pack(kernel_file, dtb_file, initrd_file, output):
         build(work / "DOOMUSB.EXE", work / "handoff.c", "handoff_main", {
             "LockPages": 1161, "UnlockPages": 1162, "SetKMode": 630,
             "GetCommState": 113, "SetCommState": 118, "Sleep": 496,
+            "RegOpenKeyExW": 461, "RegQueryValueExW": 463, "RegCloseKey": 455,
         })
         for path in targets:
             (work / path.name).rename(path)
