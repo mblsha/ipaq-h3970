@@ -22,6 +22,7 @@ let transport, rapi, linux, kit, busy = false, romUrl;
 let snapshot, transition, bootCalibration, paused = false, watchTimer, watchTask, retryAt = 0;
 const calibrationKey = "h3970-boot-calibration";
 const returnKey = "h3970-pending-return";
+const calibrationGrace = 120000;
 const available = window.isSecureContext && navigator.usb;
 const serial = window.isSecureContext && navigator.serial;
 const kitFiles = ["DOOMUSB.BIN", "DOOMUSB.EXE"];
@@ -438,7 +439,7 @@ async function discover() {
             status.textContent = transition.target === "linux"
                 ? "Linux boot unconfirmed. If Doom appeared, choose Connect Linux."
                 : "WinCE return unconfirmed. If WinCE appeared, choose Connect WinCE.";
-            if (!transition.calibration || Date.now() >= transition.deadline + 120000) {
+            if (!transition.calibration || Date.now() >= transition.deadline + calibrationGrace) {
                 transition = null;
                 saveSession(returnKey, null);
             }
@@ -456,7 +457,11 @@ async function discover() {
         status.textContent = error.message;
         retryAt = Date.now() + 4000;
         if (/ActiveSync password|RAPI password/.test(error.message)) paused = true;
-        if (transition && Date.now() >= transition.deadline) transition = null;
+        if (transition &&
+            Date.now() >= transition.deadline + (transition.calibration ? calibrationGrace : 0)) {
+            transition = null;
+            saveSession(returnKey, null);
+        }
     }
 }
 
@@ -508,7 +513,7 @@ document.addEventListener("visibilitychange", () => {
 });
 controls();
 const pendingReturn = readSession(returnKey);
-if (pendingReturn?.target === "wince" && pendingReturn.deadline + 120000 > Date.now() &&
+if (pendingReturn?.target === "wince" && pendingReturn.deadline + calibrationGrace > Date.now() &&
     isCalibration(pendingReturn.calibration?.value)) {
     transition = pendingReturn;
 }
