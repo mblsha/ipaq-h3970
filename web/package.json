@@ -1,0 +1,8 @@
+{
+  "name": "h3970-webusb",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@xterm/xterm": "6.0.0"
+  }
+}

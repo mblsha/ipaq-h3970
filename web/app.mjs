@@ -4,6 +4,7 @@ import {dumpRom, MAX_KIT_SIZE, uploadDoom} from "./transfers.mjs";
 import {sha256} from "./bytes.mjs";
 import {isLinuxPort, LinuxConsole, LINUX_USB} from "./linux.mjs";
 import {prepareToday, restoreToday} from "./today.mjs";
+import {SharedTerminal} from "./terminal.mjs";
 
 const byId = id => document.getElementById(id);
 const connect = byId("connect"), disconnect = byId("disconnect"),
@@ -12,18 +13,23 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
     passwordField = byId("password-field"), install = byId("install"), kitVersion = byId("kit-version"),
     kitRelease = byId("kit-release"),
     doomControls = byId("doom-controls"), linuxActions = byId("linux-actions"),
-    audio = byId("audio"), restart = byId("restart"), start = byId("start"),
+    audio = byId("audio"), restart = byId("restart"), start = byId("start"), exitDoom = byId("exit-doom"),
     reset = byId("reset"), resetHint = byId("reset-hint"),
     mixPanel = byId("mix"), music = byId("music-volume"), effects = byId("effect-volume"),
     dump = byId("dump"), upload = byId("upload"),
     image = byId("image"), launcher = byId("launcher"),
     status = byId("status"), transfer = byId("transfer"), meter = byId("progress"), hashes = byId("hashes"),
     amount = byId("amount"), password = byId("password"), device = byId("device"),
-    download = byId("download");
+    download = byId("download"), terminalPanel = byId("terminal-panel"), terminalStatus = byId("terminal-status");
 
 let transport, rapi, linux, kit, busy = false, romUrl;
 let snapshot, transition, bootCalibration, paused = false, watchTimer, watchTask, retryAt = 0;
 let showPermissions = false, connectedBefore = false;
+let lastLinuxStatus = 0, terminalPending = false;
+const sharedTerminal = new SharedTerminal(byId("terminal-screen"), terminalStatus, () => {
+    terminalPending = true;
+    if (!watchTask && !busy) scheduleDiscovery();
+});
 const calibrationKey = "h3970-boot-calibration";
 const transitionKey = "h3970-pending-return";
 const calibrationGrace = 120000;
@@ -92,10 +98,14 @@ function controls() {
     image.disabled = launcher.disabled = busy;
     doomControls.hidden = !running;
     audio.disabled = restart.disabled = busy || !running;
+    exitDoom.hidden = !running || !snapshot.terminal;
+    exitDoom.disabled = busy || exitDoom.hidden;
     audio.setAttribute("aria-pressed", String(running && snapshot.audio !== "off"));
     mixPanel.hidden = !running || !snapshot.mix;
     music.disabled = effects.disabled = busy || mixPanel.hidden;
     linuxActions.hidden = !inLinux;
+    terminalPanel.hidden = !inLinux || running || !snapshot.terminal;
+    if (terminalPanel.hidden) sharedTerminal.stop();
     start.hidden = !inLinux || running;
     start.disabled = busy || start.hidden;
     const canReturn = inLinux && snapshot.reset && calibrationForBoot();
@@ -145,6 +155,8 @@ async function perform(action) {
 async function endConnection(options) {
     const connection = transport;
     const console = linux;
+    sharedTerminal.stop();
+    terminalPending = false;
     transport = rapi = linux = snapshot = null;
     await connection?.close(options);
     await console?.close();
@@ -222,6 +234,7 @@ function showWinCe() {
 async function refreshLinux() {
     const previousMix = snapshot?.mix;
     snapshot = await linux.snapshot();
+    lastLinuxStatus = Date.now();
     snapshot.mix?.forEach((level, index) => {
         if (previousMix?.[index] !== level) setSlider(index, level);
     });
@@ -229,6 +242,19 @@ async function refreshLinux() {
     const audio = {off: "Muted", on: "Audio on", effects: "Effects only", music: "Music only"};
     device.textContent = "H3970 Linux" + kitLabel + " · Doom " + snapshot.doom +
         (snapshot.doom === "running" ? " · " + audio[snapshot.audio] : "");
+}
+
+async function refreshSharedTerminal() {
+    terminalPending = false;
+    controls();
+    if (terminalPanel.hidden) return;
+    try {
+        terminalPending = await sharedTerminal.update(linux, snapshot.boot);
+    } catch (error) {
+        sharedTerminal.stop();
+        if (linux.disconnected) throw error;
+        terminalStatus.textContent = error.message;
+    }
 }
 
 const sliders = [[music, byId("music-level")], [effects, byId("effect-level")]];
@@ -430,10 +456,20 @@ audio.addEventListener("click", () => perform(async () => {
     status.textContent = enabled ? "Doom audio enabled" : "Doom audio disabled";
 }));
 
+exitDoom.addEventListener("click", () => perform(async () => {
+    status.textContent = "Exiting Doom…";
+    await requireLinux().stopDemo();
+    await refreshLinux();
+    await refreshSharedTerminal();
+    if (!terminalPanel.hidden) sharedTerminal.focus();
+    status.textContent = "";
+}));
+
 for (const button of [start, restart]) {
     button.addEventListener("click", () => perform(async () => {
         const running = snapshot?.doom === "running";
         status.textContent = running ? "Restarting the Doom demo…" : "Starting the Doom demo…";
+        if (!running) sharedTerminal.stop();
         await requireLinux().restartDemo();
         await refreshLinux();
         status.textContent = running ? "Doom demo restarted" : "Doom demo started";
@@ -491,7 +527,8 @@ async function discover() {
             showWinCe();
             return;
         } else {
-            await refreshLinux();
+            if (Date.now() - lastLinuxStatus >= 1100) await refreshLinux();
+            await refreshSharedTerminal();
             return;
         }
     }
@@ -547,7 +584,8 @@ function scheduleDiscovery(delay = 0) {
             controls();
             await watchTask;
         }
-        scheduleDiscovery(transition ? 500 : 3500);
+        const delay = transition ? 500 : !terminalPanel.hidden ? (terminalPending ? 0 : 180) : linux ? 1200 : 3500;
+        scheduleDiscovery(delay);
     }, delay);
 }
 

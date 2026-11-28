@@ -57,6 +57,15 @@ label { display: block; font-size: .875rem; font-weight: 600; }
 }
 .mix span { color: var(--muted); font-variant-numeric: tabular-nums; }
 .mix input { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+.terminal-panel h2 { margin-bottom: .55rem; }
+.terminal-screen {
+    background: #151f1c;
+    border-radius: .5rem;
+    padding: .65rem;
+    overflow-x: auto;
+}
+.terminal-screen .xterm { width: max-content; }
+#terminal-status:not(:empty) { margin-top: .45rem; }
 input { display: block; max-width: 100%; margin-top: .25rem; font: inherit; }
 input[type=password] { padding: .4rem; border: 1px solid #84968e; border-radius: .35rem; }
 button {

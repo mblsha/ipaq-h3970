@@ -23,14 +23,19 @@ serial session using the dock.
 - While Doom is running, **Audio** toggles sound and restarts the demo.
   **Restart demo** keeps the audio mode. **Music** and **Sound effects**
   adjust the live mix.
+- Hold **Record** for about a second or choose **Exit Doom** to open the
+  portrait BusyBox terminal. The browser sends keyboard input over the
+  same USB cable and displays the shell output alongside the iPAQ LCD.
+  Choose **Start demo** to return to Doom in the same Linux boot.
 - **Reset to WinCE** requires a calibration backup for the running Linux
   boot. Complete setup on the handheld once, then install Doom in the same
   tab to save it. The page restores the backup and opens Today after reset.
 - Open **WinCE tools** to save the ROM to your computer or stage a
   custom kit.
 
-To run the page locally, build the static site with Rust's `wasm32-unknown-unknown` target, Python
-3.11+, and ARM GNU Embedded GCC and binutils.
+To run the page locally, build the static site with Node.js and npm, Rust's
+`wasm32-unknown-unknown` target, Python 3.11+, and ARM GNU Embedded GCC and
+binutils.
 
 ```sh
 make web

@@ -129,7 +129,28 @@ export class LinuxConsole {
         const mix = rawMix && rawMix.slice(1).map(Number);
         if (!boot || !kit || !doom || !reset) throw new Error("Linux returned an invalid Doom status");
         if (mix && mix.some(level => level > 100)) throw new Error("Linux returned invalid volume levels");
-        return {boot, kit, doom: doom[1], audio: doom[2], mix, reset: reset === "yes"};
+        return {boot, kit, doom: doom[1], audio: doom[2], mix, reset: reset === "yes",
+            terminal: /^terminal=yes$/m.test(output)};
+    }
+
+    async exchangeTerminal(position, input) {
+        if (position !== null && (!Number.isSafeInteger(position) || position < 0)) {
+            throw new Error("Invalid terminal cursor");
+        }
+        const command = "/doom/terminal exchange " + (position ?? "-") +
+            (input.length ? " " + hex(input) : "");
+        const output = await this.command(command, 3500);
+        const reply = /^terminal=(\d{1,16}),([01]),([01]),(\d{1,3}),(\d{1,3}):([a-f0-9]{0,1024})$/m.exec(output);
+        if (!reply || reply[6].length % 2 || !Number.isSafeInteger(Number(reply[1]))) {
+            throw new Error("Invalid shared terminal reply");
+        }
+        const [, next, more, reset, cols, rows, data] = reply;
+        if (Number(cols) < 1 || Number(cols) > 160 || Number(rows) < 1 || Number(rows) > 80) {
+            throw new Error("Invalid shared terminal size");
+        }
+        const bytes = Uint8Array.from(data.match(/../g) ?? [], pair => Number.parseInt(pair, 16));
+        return {position: Number(next), more: more === "1", reset: reset === "1",
+            cols: Number(cols), rows: Number(rows), bytes};
     }
 
     async setMix([music, effects]) {
@@ -146,6 +167,10 @@ export class LinuxConsole {
         const audio = enabled ? "on" : "off";
         const state = await this.snapshot();
         if (state.doom !== "running" || state.audio !== audio) await this.restartDemo(audio);
+    }
+
+    async stopDemo() {
+        await this.command("/doom/doomctl stop");
     }
 
     async reboot() {

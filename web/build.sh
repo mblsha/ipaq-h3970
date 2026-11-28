@@ -8,6 +8,13 @@ mkdir -p "$out"
 out=$(CDPATH='' cd -- "$out" && pwd)
 
 build="$root/.build/h3970-webusb-build"
+mkdir -p "$build/terminal"
+cp "$here/package.json" "$here/package-lock.json" "$build/terminal/"
+npm ci --prefix "$build/terminal" --ignore-scripts --no-audit --no-fund
+xterm="$build/terminal/node_modules/@xterm/xterm"
+cp "$xterm/lib/xterm.mjs" "$out/xterm.mjs"
+cp "$xterm/css/xterm.css" "$out/xterm.css"
+cp "$xterm/LICENSE" "$out/xterm.LICENSE"
 CARGO_TARGET_DIR="$build" cargo build --locked --release --target wasm32-unknown-unknown \
     --manifest-path "$here/tcp/Cargo.toml"
 python3 "$root/wince/build_transfers.py" "$out"
