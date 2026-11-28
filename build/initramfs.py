@@ -46,6 +46,7 @@ def main():
         file("doom/init", linux / "doom-init.sh", 0o755),
         file("doom/usb-console", linux / "usb-console.sh", 0o755),
         file("doom/device-status", linux / "doom-status.sh", 0o755),
+        file("doom/terminal", args.doom / "terminal", 0o755),
         file("doom/doom-fb", args.doom / "doom-fb", 0o755),
         file("doom/doomctl", args.doom / "doomctl", 0o755),
         file("doom/doom1.wad", args.doom / "doom1.wad", 0o644),

@@ -78,7 +78,7 @@ kmake() {
     make -C "$work/linux" O="$work/kbuild" ARCH=arm LLVM=${LLVM:-1} "$@"
 }
 kmake KCONFIG_ALLCONFIG="$work/kernel.config" allnoconfig
-for setting in FB_PXA USB_PXA25X USB_G_SERIAL SND_SOC_UDA1380 SND_SIMPLE_CARD KEYBOARD_ASIC2 KEXEC BINFMT_SCRIPT PROC_SYSCTL; do
+for setting in FB_PXA USB_PXA25X USB_G_SERIAL SND_SOC_UDA1380 SND_SIMPLE_CARD KEYBOARD_ASIC2 KEXEC BINFMT_SCRIPT PROC_SYSCTL UNIX98_PTYS; do
     grep -qx "CONFIG_$setting=y" "$work/kbuild/.config"
 done
 kmake -j"$jobs" zImage intel/pxa/hp-ipaq-h3970.dtb

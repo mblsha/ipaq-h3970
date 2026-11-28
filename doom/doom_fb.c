@@ -21,6 +21,7 @@ enum {
     LCD_HEIGHT = 240,
     VIEW_WIDTH = LCD_HEIGHT,
     VIEW_HEIGHT = LCD_WIDTH,
+    RECORD_HOLD_MS = 900,
 };
 
 static unsigned char *framebuffer;
@@ -186,18 +187,47 @@ int DG_GetKey(int *pressed, unsigned char *key)
         [KEY_LEFT] = 0xac, [KEY_RIGHT] = 0xae,
         [KEY_ENTER] = '\r', [KEY_HOMEPAGE] = 27,
         [KEY_CALENDAR] = 0xa3, [KEY_ADDRESSBOOK] = 0xa2,
-        [KEY_MAIL] = 0xb6, [KEY_RECORD] = '\t',
+        [KEY_MAIL] = 0xb6,
     };
+    static int record_down, release_tab;
+    static uint32_t record_since;
     struct input_event event;
 
+    if (release_tab) {
+        release_tab = 0;
+        *pressed = 0;
+        *key = '\t';
+        return 1;
+    }
     while (read(buttons, &event, sizeof(event)) == sizeof(event)) {
-        if (event.type == EV_KEY && event.value <= 1 && event.value >= 0 &&
-            event.code <= KEY_MAX && mapping[event.code]) {
+        if (event.type != EV_KEY || event.value > 1 || event.value < 0)
+            continue;
+        if (event.code == KEY_RECORD) {
+            if (event.value) {
+                record_since = DG_GetTicksMs();
+                record_down = 1;
+            } else if (record_down) {
+                record_down = 0;
+                if (DG_GetTicksMs() - record_since >= RECORD_HOLD_MS) {
+                    stopping = 1;
+                    return 0;
+                }
+                /* A short press keeps the original automap action. */
+                release_tab = 1;
+                *pressed = 1;
+                *key = '\t';
+                return 1;
+            }
+            continue;
+        }
+        if (event.code <= KEY_MAX && mapping[event.code]) {
             *pressed = event.value;
             *key = mapping[event.code];
             return 1;
         }
     }
+    if (record_down && DG_GetTicksMs() - record_since >= RECORD_HOLD_MS)
+        stopping = 1;
     return 0;
 }
 
