@@ -29,8 +29,7 @@ export class LinuxConsole {
         let console;
         try {
             console = new LinuxConsole(port);
-            await console.write("\n", 1000);
-            await sleep(60);
+            await console.sync();
             await console.command(identity, 3500);
             return console;
         } catch (error) {
@@ -42,7 +41,6 @@ export class LinuxConsole {
 
     constructor(port) {
         this.port = port;
-        this.reader = port.readable.getReader();
         this.writer = port.writable.getWriter();
         this.pending = "";
         this.reading = this.read().catch(() => {}).finally(() => { this.disconnected = true; });
@@ -50,10 +48,21 @@ export class LinuxConsole {
 
     async read() {
         const decoder = new TextDecoder();
-        for (;;) {
-            const {value, done} = await this.reader.read();
-            if (done) return;
-            this.pending = (this.pending + decoder.decode(value, {stream: true})).slice(-65536);
+        while (!this.closing && this.port.readable) {
+            const reader = this.port.readable.getReader();
+            this.reader = reader;
+            try {
+                for (;;) {
+                    const {value, done} = await reader.read();
+                    if (done) return;
+                    this.pending = (this.pending + decoder.decode(value, {stream: true})).slice(-65536);
+                }
+            } catch (error) {
+                if (this.closing || !["BreakError", "BufferOverrunError", "FramingError", "ParityError"].includes(error.name)) throw error;
+            } finally {
+                reader.releaseLock();
+                this.reader = null;
+            }
         }
     }
 
@@ -76,25 +85,36 @@ export class LinuxConsole {
         }
     }
 
-    async command(shell, timeout = 12000) {
-        if (this.disconnected) throw new Error("The Linux USB serial port disconnected");
-        const nonce = hex(crypto.getRandomValues(new Uint8Array(8)));
-        const reply = new RegExp("^H3970_" + nonce + ":BEGIN\\r?\\n([\\s\\S]*?)^H3970_" + nonce + ":(\\d+)\\r?$", "m");
-        const print = "/bin/busybox printf '\\nH3970_%s:%s\\n' " + nonce;
-        const line = "\n" + print + " BEGIN; " + shell + "; " + print + " \"$?\"\n";
-        this.pending = "";
-        await this.write(line, Math.min(timeout, 2000));
+    async waitReply(reply, timeout) {
         const deadline = performance.now() + timeout;
         do {
             const match = reply.exec(this.pending);
-            if (match) {
-                if (match[2] !== "0") throw new Error("The iPAQ Linux command failed (" + match[2] + ")");
-                return match[1].replaceAll("\r", "").trim();
-            }
+            if (match) return match;
             if (this.disconnected) throw new Error("The Linux USB serial port disconnected");
             await sleep(40);
         } while (performance.now() < deadline);
         throw new Error("No reply from the iPAQ Linux console");
+    }
+
+    async sync() {
+        const nonce = hex(crypto.getRandomValues(new Uint8Array(4)));
+        const reply = new RegExp("^H3970_" + nonce + "\\r?$", "m");
+        // Check a short message in both directions before sending shell commands.
+        await this.write("\n", 1000);
+        await sleep(120);
+        await this.write("printf '\\nH3970_%s\\n' " + nonce + "\n", 1000);
+        await this.waitReply(reply, 2500);
+    }
+
+    async command(shell, timeout = 12000) {
+        const nonce = hex(crypto.getRandomValues(new Uint8Array(8)));
+        const reply = new RegExp("^H3970_" + nonce + ":BEGIN\\r?\\n([\\s\\S]*?)^H3970_" + nonce + ":(\\d+)\\r?$", "m");
+        const print = "/bin/busybox printf '\\nH3970_%s:%s\\n' " + nonce;
+        this.pending = "";
+        await this.write("\n" + print + " BEGIN; " + shell + "; " + print + " \"$?\"\n", Math.min(timeout, 2000));
+        const match = await this.waitReply(reply, timeout);
+        if (match[2] !== "0") throw new Error("The iPAQ Linux command failed (" + match[2] + ")");
+        return match[1].replaceAll("\r", "").trim();
     }
 
     async snapshot() {
@@ -104,8 +124,21 @@ export class LinuxConsole {
         const kit = /^kit=([a-zA-Z0-9.+-]{1,64})$/m.exec(output)?.[1];
         const doom = /^doom=(running|stopped) audio=(off|on|effects|music)$/m.exec(output);
         const reset = /^reset=(yes|no)$/m.exec(output)?.[1];
+        const rawMix = /^mix=(\d{1,3}),(\d{1,3})$/m.exec(output);
+        const mix = rawMix && rawMix.slice(1).map(Number);
         if (!boot || !kit || !doom || !reset) throw new Error("Linux returned an invalid Doom status");
-        return {boot, kit, doom: doom[1], audio: doom[2], reset: reset === "yes"};
+        if (mix && mix.some(level => level > 100)) throw new Error("Linux returned invalid volume levels");
+        return {boot, kit, doom: doom[1], audio: doom[2], mix, reset: reset === "yes"};
+    }
+
+    async setMix([music, effects]) {
+        for (const level of [music, effects]) {
+            if (!Number.isInteger(level) || level < 0 || level > 100) throw new Error("Volume must be between 0 and 100");
+        }
+        const result = await this.command("/doom/doomctl mix " + music + " " + effects);
+        if (!result.split("\n").includes("mix=" + music + "," + effects)) {
+            throw new Error("The iPAQ did not confirm the volume change");
+        }
     }
 
     async setAudio(enabled) {
@@ -142,9 +175,9 @@ export class LinuxConsole {
     }
 
     async close() {
-        await this.reader.cancel().catch(() => {});
+        this.closing = true;
+        await this.reader?.cancel().catch(() => {});
         await this.reading;
-        this.reader.releaseLock();
         this.writer.releaseLock();
         await this.port.close().catch(() => {});
     }

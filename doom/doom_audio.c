@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 #include <sound/asound.h>
 
@@ -28,9 +29,13 @@ enum {
     FADE_LEVELS = 256,
     EFFECT_GAIN_DIVISOR = 1 << (FRACTION_BITS + 1),
     MUSIC_GAIN = 3,
+    GAIN_SHIFT = 8,
+    UNITY_GAIN = 1 << GAIN_SHIFT,
+    MIX_RAMP_SHIFT = 8,
 };
 
 _Static_assert(FADE_FRAMES <= PERIOD, "An effect tail must fit in one mix period");
+_Static_assert((1 << MIX_RAMP_SHIFT) == PERIOD, "The volume ramp spans one mix period");
 
 struct voice {
     const byte *samples;
@@ -65,6 +70,8 @@ static bool stopping_worker;
 static bool trace_audio;
 static unsigned int pcm_frames, next_trace, music_frames, effect_frames, xruns;
 static unsigned int music_peak, effect_peak, output_peak;
+static int music_gain = UNITY_GAIN;
+static int effect_gain = UNITY_GAIN;
 
 /* The guest has a dedicated H3970 card. Use the stock diagnostic's route
  * and volume, and keep the previous control values for shutdown. */
@@ -354,6 +361,8 @@ static void record_peak(unsigned int *peak, int sample)
 
 static void mix_period(void)
 {
+    static int last_music_gain = UNITY_GAIN;
+    static int last_effect_gain = UNITY_GAIN;
     int mixed[PERIOD][2] = {0};
     int16_t music[PERIOD];
 
@@ -393,10 +402,14 @@ static void mix_period(void)
             voice->samples = NULL;
         }
     }
-    for (unsigned int i = 0; i < PERIOD; ++i) {
-        int left = mixed[i][0];
-        int right = mixed[i][1];
-        int song = music[i] * MUSIC_GAIN;
+    const int music_delta = music_gain - last_music_gain;
+    const int effect_delta = effect_gain - last_effect_gain;
+    for (int i = 0; i < PERIOD; ++i) {
+        int song_gain = last_music_gain + ((music_delta * i) >> MIX_RAMP_SHIFT);
+        int sfx_gain = last_effect_gain + ((effect_delta * i) >> MIX_RAMP_SHIFT);
+        int left = (mixed[i][0] * sfx_gain) >> GAIN_SHIFT;
+        int right = (mixed[i][1] * sfx_gain) >> GAIN_SHIFT;
+        int song = (music[i] * MUSIC_GAIN * song_gain) >> GAIN_SHIFT;
         period[i][0] = pcm_sample(left + song);
         period[i][1] = pcm_sample(right + song);
         if (trace_audio) {
@@ -409,6 +422,27 @@ static void mix_period(void)
             record_peak(&output_peak, period[i][1]);
         }
     }
+    last_music_gain = music_gain;
+    last_effect_gain = effect_gain;
+}
+
+static void read_mix_levels(void)
+{
+    unsigned int music = 100, effects = 100;
+    FILE *file = fopen("/tmp/doom-mix", "r");
+    if (file) {
+        if (fscanf(file, "%u %u", &music, &effects) != 2 || music > 100 || effects > 100) {
+            music = effects = 100;
+        }
+        fclose(file);
+    }
+    int next_music = (music * UNITY_GAIN + 50) / 100;
+    int next_effect = (effects * UNITY_GAIN + 50) / 100;
+    if (trace_audio && (next_music != music_gain || next_effect != effect_gain)) {
+        fprintf(stderr, "H3970 DOOM: music volume %u, sound effects volume %u\n", music, effects);
+    }
+    music_gain = next_music;
+    effect_gain = next_effect;
 }
 
 static void trace_pcm(unsigned int frames)
@@ -460,7 +494,15 @@ static void *playback(void *unused)
 {
     (void)unused;
     struct pollfd wait = { .fd = pcm, .events = POLLOUT };
+    uint32_t next_mix_check = 0;
     for (;;) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint32_t ms = (uint32_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+        if (!next_mix_check || (int32_t)(ms - next_mix_check) >= 0) {
+            read_mix_levels();
+            next_mix_check = ms + 200;
+        }
         H3970_LockAudio();
         bool active = !stopping_worker && pump_audio();
         H3970_UnlockAudio();

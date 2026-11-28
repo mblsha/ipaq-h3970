@@ -1,6 +1,22 @@
 #!/bin/sh
 set -eu
 pidfile=/tmp/doom.pid
+mixfile=/tmp/doom-mix
+
+volume() {
+    case "$1" in
+        [0-9]|[1-9][0-9]|100) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mix_state() {
+    if [ -r "$mixfile" ] && read -r music effects <"$mixfile" && volume "$music" && volume "$effects"; then
+        printf 'mix=%d,%d\n' "$music" "$effects"
+    else
+        printf 'mix=100,100\n'
+    fi
+}
 
 running() {
     [ -r "$pidfile" ] && read -r pid <"$pidfile" || return 1
@@ -70,8 +86,20 @@ case "${1:-}" in
             exit 1
         fi
         ;;
+    mix)
+        if [ "$#" -eq 3 ] && volume "$2" && volume "$3"; then
+            staging=$(/bin/busybox mktemp /tmp/doom-mix.XXXXXX)
+            trap '/bin/busybox rm -f "$staging"' EXIT
+            printf '%s %s\n' "$2" "$3" >"$staging"
+            /bin/busybox mv -f "$staging" "$mixfile"
+        elif [ "$#" -ne 1 ]; then
+            echo 'Usage: doomctl mix [MUSIC EFFECTS] (0–100)' >&2
+            exit 2
+        fi
+        mix_state
+        ;;
     *)
-        echo 'Usage: doomctl start [--audio|--effects|--music] | stop | status [--machine]' >&2
+        echo 'Usage: doomctl start [--audio|--effects|--music] | stop | status [--machine] | mix [MUSIC EFFECTS]' >&2
         exit 2
         ;;
 esac

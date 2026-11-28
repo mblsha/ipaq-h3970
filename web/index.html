@@ -48,6 +48,14 @@
           <button id="restart" class="secondary" disabled>Restart demo</button>
           <button id="reset" class="secondary" disabled>Reset to WinCE</button>
         </div>
+        <div id="mix" class="mix" hidden>
+          <label>Music <span id="music-level"></span>
+            <input id="music-volume" type="range" min="0" max="100" value="100" disabled>
+          </label>
+          <label>Sound effects <span id="effect-level"></span>
+            <input id="effect-volume" type="range" min="0" max="100" value="100" disabled>
+          </label>
+        </div>
       </section>
       <section aria-labelledby="dump-heading">
         <h2 id="dump-heading">WinCE ROM</h2>

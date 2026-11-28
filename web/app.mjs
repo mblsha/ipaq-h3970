@@ -10,6 +10,7 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
     kitRelease = byId("kit-release"),
     audioOn = byId("audio-on"), audioOff = byId("audio-off"),
     restart = byId("restart"), reset = byId("reset"),
+    mixPanel = byId("mix"), music = byId("music-volume"), effects = byId("effect-volume"),
     dump = byId("dump"), upload = byId("upload"),
     image = byId("image"), launcher = byId("launcher"),
     status = byId("status"), meter = byId("progress"), hashes = byId("hashes"),
@@ -39,6 +40,8 @@ function controls() {
     image.disabled = launcher.disabled = busy;
     audioOn.disabled = audioOff.disabled = restart.disabled = busy || !linux || !snapshot;
     reset.disabled = busy || !linux || !snapshot?.reset;
+    mixPanel.hidden = !linux || !snapshot?.mix;
+    music.disabled = effects.disabled = busy || mixPanel.hidden;
 }
 
 function reportProgress({stage, done, total}) {
@@ -134,12 +137,41 @@ function showWinCe() {
 }
 
 async function refreshLinux() {
+    const previousMix = snapshot?.mix;
     snapshot = await linux.snapshot();
+    snapshot.mix?.forEach((level, index) => {
+        if (previousMix?.[index] !== level) setSlider(index, level);
+    });
     const kitLabel = snapshot.kit === "unknown" ? "" : " " + snapshot.kit;
     const audio = {off: "Muted", on: "Audio on", effects: "Effects only", music: "Music only"};
     device.textContent = "H3970 Linux" + kitLabel + " · Doom " + snapshot.doom +
         (snapshot.doom === "running" ? " · " + audio[snapshot.audio] : "");
 }
+
+const sliders = [[music, byId("music-level")], [effects, byId("effect-level")]];
+
+function setSlider(index, value) {
+    const [control, label] = sliders[index];
+    control.value = value;
+    label.textContent = value + "%";
+}
+
+sliders.forEach(([control], index) => {
+    control.addEventListener("input", () => setSlider(index, control.value));
+    control.addEventListener("change", () => {
+        const mix = sliders.map(([input]) => Number(input.value));
+        return perform(async () => {
+            try {
+                await requireLinux().setMix(mix);
+                await refreshLinux();
+                status.textContent = "Doom volume updated";
+            } catch (error) {
+                snapshot?.mix?.forEach((level, channel) => setSlider(channel, level));
+                throw error;
+            }
+        });
+    });
+});
 
 function requireLinux() {
     if (!linux || linux.disconnected) throw new Error("Reconnect the iPAQ in Linux first");

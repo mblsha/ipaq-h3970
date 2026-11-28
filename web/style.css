@@ -21,6 +21,9 @@ section {
 .connection { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; }
 .connection label { margin: 0; }
 .button-row { display: flex; flex-wrap: wrap; gap: .55rem; }
+.mix { margin-top: .8rem; }
+.mix input { width: 100%; accent-color: #1e5e52; }
+.mix label { margin-bottom: .8rem; }
 details { margin-top: .85rem; }
 summary { cursor: pointer; color: #185b50; }
 #kit-version { overflow-wrap: anywhere; }
