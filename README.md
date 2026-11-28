@@ -20,14 +20,14 @@ serial session using the dock.
   It also reconnects on a browser reload or USB replug. If Chromium needs
   permission during a switch, the connection button offers the matching
   USB or serial permission and the page resumes from the device's reply.
-- **Enable audio** and **Disable audio** restart the demo when the setting
-  changes. **Restart demo** keeps the current audio mode. **Music** and
-  **Sound effects** adjust the live mix.
+- While Doom is running, **Audio** toggles sound and restarts the demo.
+  **Restart demo** keeps the audio mode. **Music** and **Sound effects**
+  adjust the live mix.
 - **Reset to WinCE** requires a calibration backup for the running Linux
   boot. Complete setup on the handheld once, then install Doom in the same
   tab to save it. The page restores the backup and opens Today after reset.
-- In WinCE, use **Dump ROM** to save the ROM to your computer, or
-  **Use your own kit** to stage other files.
+- Open **WinCE tools** to save the ROM to your computer or stage a
+  custom kit.
 
 To run the page locally, build the static site with Rust's `wasm32-unknown-unknown` target, Python
 3.11+, and ARM GNU Embedded GCC and binutils.

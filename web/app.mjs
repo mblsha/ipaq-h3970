@@ -8,14 +8,16 @@ import {prepareToday, restoreToday} from "./today.mjs";
 const byId = id => document.getElementById(id);
 const connect = byId("connect"), disconnect = byId("disconnect"),
     permissions = byId("permissions"), allowWinCe = byId("allow-wince"), allowLinux = byId("allow-linux"),
-    install = byId("install"), kitVersion = byId("kit-version"),
+    releasePanel = byId("release-panel"), winCeTools = byId("wince-tools"),
+    passwordField = byId("password-field"), install = byId("install"), kitVersion = byId("kit-version"),
     kitRelease = byId("kit-release"),
-    audioOn = byId("audio-on"), audioOff = byId("audio-off"),
-    restart = byId("restart"), reset = byId("reset"), resetHint = byId("reset-hint"),
+    doomControls = byId("doom-controls"), linuxActions = byId("linux-actions"),
+    audio = byId("audio"), restart = byId("restart"), start = byId("start"),
+    reset = byId("reset"), resetHint = byId("reset-hint"),
     mixPanel = byId("mix"), music = byId("music-volume"), effects = byId("effect-volume"),
     dump = byId("dump"), upload = byId("upload"),
     image = byId("image"), launcher = byId("launcher"),
-    status = byId("status"), meter = byId("progress"), hashes = byId("hashes"),
+    status = byId("status"), transfer = byId("transfer"), meter = byId("progress"), hashes = byId("hashes"),
     amount = byId("amount"), password = byId("password"), device = byId("device"),
     download = byId("download");
 
@@ -69,6 +71,8 @@ function controls() {
     const connecting = busy || (watchTask && !rapi && !linux);
     const target = transition?.target;
     const canConnect = target === "linux" ? serial : target === "wince" ? available : available || serial;
+    const inLinux = Boolean(linux && snapshot);
+    const running = inLinux && snapshot.doom === "running";
     connect.textContent = target === "linux" ? "Allow Linux serial access" :
         target === "wince" ? "Allow WinCE USB access" : "Connect iPAQ";
     connect.disabled = connecting || connected || !canConnect;
@@ -78,20 +82,32 @@ function controls() {
     allowLinux.disabled = connecting || !serial;
     disconnect.disabled = busy || !(transport || linux);
     disconnect.hidden = !connected;
-    install.disabled = busy || connecting || Boolean(linux || transition) || !available || !kit;
+    releasePanel.hidden = Boolean(linux || transition) || !available;
+    install.disabled = connecting || releasePanel.hidden || !kit;
+    winCeTools.hidden = Boolean(linux) || target === "linux" || !available;
     dump.disabled = busy || !rapi;
     upload.disabled = busy || !rapi || !image.files.length || !launcher.files.length;
     password.disabled = busy || Boolean(transport);
+    passwordField.hidden = Boolean(transport);
     image.disabled = launcher.disabled = busy;
-    audioOn.disabled = audioOff.disabled = restart.disabled = busy || !linux || !snapshot;
-    const canReturn = Boolean(snapshot?.reset && calibrationForBoot());
-    reset.disabled = busy || !linux || !canReturn;
-    resetHint.hidden = !linux || canReturn;
-    mixPanel.hidden = !linux || !snapshot?.mix;
+    doomControls.hidden = !running;
+    audio.disabled = restart.disabled = busy || !running;
+    audio.setAttribute("aria-pressed", String(running && snapshot.audio !== "off"));
+    mixPanel.hidden = !running || !snapshot.mix;
     music.disabled = effects.disabled = busy || mixPanel.hidden;
+    linuxActions.hidden = !inLinux;
+    start.hidden = !inLinux || running;
+    start.disabled = busy || start.hidden;
+    const canReturn = inLinux && snapshot.reset && calibrationForBoot();
+    reset.disabled = busy || !canReturn;
+    resetHint.hidden = !inLinux || Boolean(canReturn);
+    resetHint.textContent = resetHint.hidden ? "" : snapshot.reset
+        ? "Start Doom from calibrated WinCE in this tab to enable reset."
+        : "This kit cannot reset to WinCE.";
 }
 
 function reportProgress({stage, done, total}) {
+    transfer.hidden = false;
     if (status.dataset.stage !== stage) {
         status.textContent = stageLabels[stage];
         status.dataset.stage = stage;
@@ -121,6 +137,7 @@ async function perform(action) {
         }
     } finally {
         busy = false;
+        transfer.hidden = true;
         controls();
     }
 }
@@ -177,8 +194,7 @@ async function openWinCe(port, pass = "") {
             status.textContent = snapshot.failure && snapshot.failure !== transition.failure
                 ? "Linux launcher reported " + snapshot.failure : "WinCE answered again. Linux boot was not confirmed.";
         } else {
-            status.textContent = transition ? "Returned to WinCE" : "WinCE connection ready";
-            if (snapshot.failure) status.textContent += " · Last launcher report " + snapshot.failure;
+            status.textContent = snapshot.failure ? "Last launcher report " + snapshot.failure : "";
             if (transition?.target === "wince") {
                 restore = transition.calibration;
             }
@@ -266,7 +282,7 @@ async function openLinux(port) {
             ? "Linux still answers on the previous boot. WinCE reset was not confirmed."
             : "Linux answered. WinCE reset was not confirmed.";
     } else {
-        status.textContent = "Linux connection ready";
+        status.textContent = "";
     }
     setTransition(null);
 }
@@ -405,21 +421,24 @@ install.addEventListener("click", () => perform(async () => {
     scheduleDiscovery(250);
 }));
 
-for (const [button, enabled] of [[audioOn, true], [audioOff, false]]) {
+audio.addEventListener("click", () => perform(async () => {
+    if (snapshot?.doom !== "running") return;
+    const enabled = snapshot.audio === "off";
+    status.textContent = "Changing Doom audio…";
+    await requireLinux().setAudio(enabled);
+    await refreshLinux();
+    status.textContent = enabled ? "Doom audio enabled" : "Doom audio disabled";
+}));
+
+for (const button of [start, restart]) {
     button.addEventListener("click", () => perform(async () => {
-        status.textContent = "Changing Doom audio…";
-        await requireLinux().setAudio(enabled);
+        const running = snapshot?.doom === "running";
+        status.textContent = running ? "Restarting the Doom demo…" : "Starting the Doom demo…";
+        await requireLinux().restartDemo();
         await refreshLinux();
-        status.textContent = enabled ? "Doom audio enabled" : "Doom audio disabled";
+        status.textContent = running ? "Doom demo restarted" : "Doom demo started";
     }));
 }
-
-restart.addEventListener("click", () => perform(async () => {
-    status.textContent = "Restarting the Doom demo…";
-    await requireLinux().restartDemo();
-    await refreshLinux();
-    status.textContent = "Doom demo restarted";
-}));
 
 reset.addEventListener("click", () => perform(async () => {
     const connection = requireLinux();

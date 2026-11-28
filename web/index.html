@@ -10,73 +10,76 @@
 </head>
 <body>
   <main>
-    <header>
-      <h1>iPAQ H3970</h1>
-      <p>Connect your iPAQ H3970 over its native USB cable.</p>
-    </header>
-    <section aria-labelledby="device-heading">
-      <h2 id="device-heading">Connection</h2>
-      <div class="connection">
-        <label>ActiveSync password <span>(optional)</span>
-          <input id="password" type="password" autocomplete="off" maxlength="127">
-        </label>
+    <header class="device-header">
+      <div>
+        <h1>iPAQ H3970</h1>
+        <p id="device" class="muted" aria-live="polite">No iPAQ connected</p>
+      </div>
+      <div class="button-row">
         <button id="connect">Connect iPAQ</button>
         <button id="disconnect" class="secondary" disabled hidden>Disconnect</button>
       </div>
-      <p id="device" aria-live="polite">No iPAQ connected</p>
-      <div id="permissions" hidden>
-        <p>Choose the iPAQ’s current mode to grant browser access.</p>
-        <div class="button-row">
-          <button id="allow-wince" class="secondary">WinCE USB</button>
-          <button id="allow-linux" class="secondary">Linux serial</button>
-        </div>
+    </header>
+    <section id="permissions" aria-label="Browser permissions" hidden>
+      <p>Choose the iPAQ’s current mode to grant browser access.</p>
+      <div class="button-row">
+        <button id="allow-wince" class="secondary">WinCE USB</button>
+        <button id="allow-linux" class="secondary">Linux serial</button>
       </div>
     </section>
-    <div class="actions">
-      <section aria-labelledby="upload-heading">
-        <h2 id="upload-heading">Linux Doom</h2>
+    <section id="release-panel" class="installer row" aria-label="Install Doom">
+      <div>
         <p id="kit-version">Checking for a released kit…</p>
-        <button id="install" disabled>Install and start Doom</button>
         <a id="kit-release" hidden>Release and licenses</a>
+      </div>
+      <button id="install" disabled>Install and start Doom</button>
+    </section>
+    <details id="wince-tools" class="wince-tools">
+      <summary>WinCE tools</summary>
+      <div class="tool-fields">
+        <label id="password-field">ActiveSync password <span class="muted">(optional)</span>
+          <input id="password" type="password" autocomplete="off" maxlength="127">
+        </label>
+        <button id="dump" class="secondary" disabled>Dump ROM</button>
         <details>
           <summary>Use your own kit</summary>
           <label>DOOMUSB.BIN<input id="image" type="file" accept=".bin"></label>
           <label>DOOMUSB.EXE<input id="launcher" type="file" accept=".exe"></label>
           <button id="upload" class="secondary" disabled>Upload and verify</button>
         </details>
-      </section>
-      <section aria-labelledby="linux-heading">
-        <h2 id="linux-heading">While Doom is running</h2>
-        <p>Changing audio restarts the demo.</p>
+      </div>
+    </details>
+    <section id="doom-controls" class="doom-controls" aria-labelledby="doom-heading" hidden>
+      <div class="row">
+        <h2 id="doom-heading">Doom</h2>
         <div class="button-row">
-          <button id="audio-on" class="secondary" disabled>Enable audio</button>
-          <button id="audio-off" class="secondary" disabled>Disable audio</button>
+          <button id="audio" class="secondary" aria-pressed="false" title="Changing audio restarts the demo" disabled>Audio</button>
           <button id="restart" class="secondary" disabled>Restart demo</button>
-          <button id="reset" class="secondary" disabled>Reset to WinCE</button>
         </div>
-        <p id="reset-hint" hidden>Reset needs this iPAQ’s saved touch calibration. Launch the kit from calibrated WinCE in this tab to save it.</p>
-        <div id="mix" class="mix" hidden>
-          <label>Music <span id="music-level"></span>
-            <input id="music-volume" type="range" min="0" max="100" value="100" disabled>
-          </label>
-          <label>Sound effects <span id="effect-level"></span>
-            <input id="effect-volume" type="range" min="0" max="100" value="100" disabled>
-          </label>
-        </div>
-      </section>
-      <section aria-labelledby="dump-heading">
-        <h2 id="dump-heading">WinCE ROM</h2>
-        <p>Back up the 48 MiB stock ROM.</p>
-        <button id="dump" class="secondary" disabled>Dump ROM</button>
-        <a id="download" download="H3970ROM.BIN" hidden>Save ROM image</a>
-      </section>
-    </div>
-    <section aria-label="Transfer progress" class="transfer">
-      <div aria-live="polite" role="status" id="status">Ready to connect</div>
+      </div>
+      <div id="mix" class="mix" hidden>
+        <label>Music <span id="music-level"></span>
+          <input id="music-volume" type="range" min="0" max="100" value="100" disabled>
+        </label>
+        <label>Sound effects <span id="effect-level"></span>
+          <input id="effect-volume" type="range" min="0" max="100" value="100" disabled>
+        </label>
+      </div>
+    </section>
+    <section id="linux-actions" class="linux-actions" aria-label="Linux device actions" hidden>
+      <div class="button-row">
+        <button id="start" hidden disabled>Start demo</button>
+        <button id="reset" class="secondary" aria-describedby="reset-hint" disabled>Reset to WinCE</button>
+      </div>
+      <p id="reset-hint" class="muted" hidden></p>
+    </section>
+    <div id="status" class="status" role="status"></div>
+    <div id="transfer" class="transfer" hidden>
       <progress id="progress" aria-label="Transfer progress" max="1" value="0"></progress>
       <span id="amount" aria-hidden="true"></span>
-      <output id="hashes" hidden></output>
-    </section>
+    </div>
+    <a id="download" download="H3970ROM.BIN" hidden>Save ROM image</a>
+    <output id="hashes" hidden></output>
   </main>
 </body>
 </html>
