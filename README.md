@@ -24,8 +24,9 @@ serial session using the dock.
   starts the demo again with the current audio mode. The **Music** and
   **Sound effects** sliders change the live mix. **Reset to WinCE**
   reboots to stock WinCE. The page saves valid touch calibration before
-  booting Linux and can restore it to return to Today. Complete setup on
-  the handheld once if there is no saved calibration. If Linux USB
+  booting Linux and restores it to return to Today. Reset is available
+  when this tab has a calibration backup for the running Linux boot.
+  Complete setup on the handheld once to prepare that backup. If Linux USB
   stops responding, reconnect the cable and choose **Connect Linux** again.
 - Use **Connect WinCE** for **Dump ROM** or to stage a different kit.
   The ROM image is saved by the browser on your computer.

@@ -1,16 +1,16 @@
 import {ActiveSync, IPAQ} from "./transport.mjs";
-import {DOCUMENTS, Rapi} from "./rapi.mjs";
+import {DOCUMENTS, isCalibration, Rapi} from "./rapi.mjs";
 import {dumpRom, MAX_KIT_SIZE, uploadDoom} from "./transfers.mjs";
 import {sha256} from "./bytes.mjs";
 import {isLinuxPort, LinuxConsole, LINUX_USB} from "./linux.mjs";
-import {restoreToday} from "./today.mjs";
+import {prepareToday, restoreToday} from "./today.mjs";
 
 const byId = id => document.getElementById(id);
 const connect = byId("connect"), disconnect = byId("disconnect"),
     connectLinux = byId("connect-linux"), install = byId("install"), kitVersion = byId("kit-version"),
     kitRelease = byId("kit-release"),
     audioOn = byId("audio-on"), audioOff = byId("audio-off"),
-    restart = byId("restart"), reset = byId("reset"),
+    restart = byId("restart"), reset = byId("reset"), resetHint = byId("reset-hint"),
     mixPanel = byId("mix"), music = byId("music-volume"), effects = byId("effect-volume"),
     dump = byId("dump"), upload = byId("upload"),
     image = byId("image"), launcher = byId("launcher"),
@@ -21,6 +21,7 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
 let transport, rapi, linux, kit, busy = false, romUrl;
 let snapshot, transition, bootCalibration, paused = false, watchTimer, watchTask, retryAt = 0;
 const calibrationKey = "h3970-boot-calibration";
+const returnKey = "h3970-pending-return";
 const available = window.isSecureContext && navigator.usb;
 const serial = window.isSecureContext && navigator.serial;
 const kitFiles = ["DOOMUSB.BIN", "DOOMUSB.EXE"];
@@ -29,6 +30,23 @@ const stageLabels = {
     complete: "Transfer complete", failed: "Transfer interrupted",
 };
 const kib = value => Math.floor(value / 1024).toLocaleString();
+
+function readSession(key) {
+    try { return JSON.parse(sessionStorage.getItem(key)); } catch { return null; }
+}
+
+function saveSession(key, value) {
+    try {
+        if (value) sessionStorage.setItem(key, JSON.stringify(value));
+        else sessionStorage.removeItem(key);
+    } catch {}
+}
+
+function calibrationForBoot() {
+    const saved = bootCalibration ?? readSession(calibrationKey);
+    return snapshot?.boot && snapshot.boot !== "unknown" && saved?.boot === snapshot.boot &&
+        isCalibration(saved.value) ? saved : null;
+}
 
 function controls() {
     const connecting = watchTask && !rapi && !linux;
@@ -41,7 +59,9 @@ function controls() {
     password.disabled = busy || Boolean(transport);
     image.disabled = launcher.disabled = busy;
     audioOn.disabled = audioOff.disabled = restart.disabled = busy || !linux || !snapshot;
-    reset.disabled = busy || !linux || !snapshot?.reset;
+    const canReturn = Boolean(snapshot?.reset && calibrationForBoot());
+    reset.disabled = busy || !linux || !canReturn;
+    resetHint.hidden = !linux || canReturn;
     mixPanel.hidden = !linux || !snapshot?.mix;
     music.disabled = effects.disabled = busy || mixPanel.hidden;
 }
@@ -127,7 +147,10 @@ async function openWinCe(port, pass = "") {
         } else {
             status.textContent = transition ? "Returned to WinCE" : "WinCE connection ready";
             if (snapshot.failure) status.textContent += " · Last launcher report " + snapshot.failure;
-            if (transition?.target === "wince") restore = transition.calibration ?? {};
+            if (transition?.target === "wince") {
+                restore = transition.calibration;
+                saveSession(returnKey, null);
+            }
         }
         transition = null;
     } catch (error) {
@@ -206,7 +229,7 @@ async function openLinux(port) {
     if (transition?.target === "linux" && transition.calibration &&
         snapshot.boot !== "unknown" && transition.kit === snapshot.kit) {
         bootCalibration = {...transition.calibration, boot: snapshot.boot};
-        try { sessionStorage.setItem(calibrationKey, JSON.stringify(bootCalibration)); } catch {}
+        saveSession(calibrationKey, bootCalibration);
     }
     if (transition?.target === "linux" && snapshot.kit !== "unknown" && transition.kit !== snapshot.kit) {
         status.textContent = "Linux answered with a different kit than requested.";
@@ -214,6 +237,7 @@ async function openLinux(port) {
         status.textContent = transition.boot !== "unknown" && transition.boot === snapshot.boot
             ? "Linux still answers on the previous boot. WinCE reset was not confirmed."
             : "Linux answered. WinCE reset was not confirmed.";
+        saveSession(returnKey, null);
     } else {
         status.textContent = "Linux connection ready";
     }
@@ -248,6 +272,7 @@ connectLinux.addEventListener("click", () => perform(async () => {
 disconnect.addEventListener("click", () => perform(async () => {
     paused = true;
     transition = null;
+    saveSession(returnKey, null);
     await endConnection();
     status.textContent = "USB session closed";
 }));
@@ -338,16 +363,18 @@ restart.addEventListener("click", () => perform(async () => {
 
 reset.addEventListener("click", () => perform(async () => {
     const connection = requireLinux();
+    const calibration = calibrationForBoot();
+    if (!calibration) throw new Error("Reset requires saved calibration from this Linux boot");
+    await prepareToday();
     status.textContent = "Resetting the iPAQ to WinCE…";
-    let saved = bootCalibration;
-    try { saved ??= JSON.parse(sessionStorage.getItem(calibrationKey)); } catch {}
-    const calibration = saved?.boot === snapshot.boot ? saved : undefined;
     transition = {target: "wince", boot: snapshot.boot, calibration, deadline: Date.now() + 20000};
+    saveSession(returnKey, transition);
     try {
         await connection.reboot();
     } catch (error) {
         if (!connection.disconnected) {
             transition = null;
+            saveSession(returnKey, null);
             throw error;
         }
     }
@@ -411,7 +438,10 @@ async function discover() {
             status.textContent = transition.target === "linux"
                 ? "Linux boot unconfirmed. If Doom appeared, choose Connect Linux."
                 : "WinCE return unconfirmed. If WinCE appeared, choose Connect WinCE.";
-            if (!transition.calibration || Date.now() >= transition.deadline + 120000) transition = null;
+            if (!transition.calibration || Date.now() >= transition.deadline + 120000) {
+                transition = null;
+                saveSession(returnKey, null);
+            }
         }
         return;
     }
@@ -477,4 +507,9 @@ document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") deviceChanged();
 });
 controls();
+const pendingReturn = readSession(returnKey);
+if (pendingReturn?.target === "wince" && pendingReturn.deadline + 120000 > Date.now() &&
+    isCalibration(pendingReturn.calibration?.value)) {
+    transition = pendingReturn;
+}
 loadRelease().finally(() => scheduleDiscovery());

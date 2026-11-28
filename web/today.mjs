@@ -1,8 +1,24 @@
 import {sleep, utf16, view} from "./bytes.mjs";
-import {DOCUMENTS} from "./rapi.mjs";
+import {DOCUMENTS, isCalibration} from "./rapi.mjs";
 
 const DESKTOP = "DesktopExplorerWindow";
 const path = name => DOCUMENTS + "\\" + name;
+const helpers = new Map();
+
+async function helper(stem) {
+    if (!helpers.has(stem)) {
+        const response = await fetch(new URL("./today/" + stem + ".EXE", import.meta.url));
+        if (!response.ok) throw new Error("WinCE Today helper could not be loaded");
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes[0] !== 0x4d || bytes[1] !== 0x5a) throw new Error("Invalid WinCE Today helper");
+        helpers.set(stem, bytes);
+    }
+    return helpers.get(stem);
+}
+
+export async function prepareToday() {
+    await Promise.all(["RT83WN", "RT83GO", "RT83TP", "RT83TD", "RT83SC"].map(helper));
+}
 
 async function run(rapi, stem, {size, suffix = "BIN", calibration} = {}) {
     const exe = path(stem + ".EXE");
@@ -12,11 +28,10 @@ async function run(rapi, stem, {size, suffix = "BIN", calibration} = {}) {
     if ([exe, report, touch].some(name => name && occupied.has(name))) {
         throw new Error("A WinCE Today helper file already exists");
     }
-    const response = await fetch(new URL("./today/" + stem + ".EXE", import.meta.url));
-    if (!response.ok) throw new Error("WinCE Today helper could not be loaded");
+    const executable = await helper(stem);
     const cleanup = [];
     try {
-        await rapi.upload(new Uint8Array(await response.arrayBuffer()), exe);
+        await rapi.upload(executable, exe);
         cleanup.push(exe);
         if (touch) {
             await rapi.upload(utf16(calibration), touch);
@@ -56,7 +71,7 @@ async function foreground(rapi) {
 export async function restoreToday(rapi, calibration) {
     let active = await foreground(rapi);
     if (active === "Welcome") {
-        if (!calibration) throw new Error("No saved touch calibration. Complete setup on the iPAQ once.");
+        if (!isCalibration(calibration)) throw new Error("No saved touch calibration. Complete setup on the iPAQ once.");
         const receipt = view(await run(rapi, "RT83GO", {size: 268, calibration}));
         if (receipt.getInt32(0, true) !== 1 || receipt.getInt32(4, true) !== 0 || receipt.getInt32(8, true) !== 1 ||
             await rapi.readCalibration() !== calibration) {

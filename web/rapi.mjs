@@ -19,6 +19,11 @@ export function temporaryStem(prefix) {
     return prefix + hex(crypto.getRandomValues(new Uint8Array(3))).toUpperCase();
 }
 
+export function isCalibration(value) {
+    return typeof value === "string" && value.length >= 11 && value.length < 95 &&
+        /^\s*-?[0-9]+(?:[,\s]+-?[0-9]+){9}\s*$/.test(value);
+}
+
 export class WinCeError extends Error {
     constructor(operation, code) {
         super(operation + " failed (WinCE error " + code + ")");
@@ -94,8 +99,7 @@ export class Rapi {
                 throw new Error("Unexpected WinCE calibration value");
             }
             const value = new TextDecoder("utf-16le", {fatal: true}).decode(data).replace(/\0+$/, "");
-            if (!/^\s*-?[0-9]+(?:[,\s]+-?[0-9]+){9}\s*$/.test(value) ||
-                value.length < 11 || value.length >= 95) {
+            if (!isCalibration(value)) {
                 throw new Error("WinCE did not report five valid touch calibration points");
             }
             return value;
