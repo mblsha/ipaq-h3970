@@ -93,6 +93,7 @@ export class LinuxConsole {
             if (this.disconnected) throw new Error("The Linux USB serial port disconnected");
             await sleep(40);
         } while (performance.now() < deadline);
+        this.disconnected = true;
         throw new Error("No reply from the iPAQ Linux console");
     }
 

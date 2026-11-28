@@ -203,6 +203,7 @@ sliders.forEach(([control], index) => {
         const mix = sliders.map(([input]) => Number(input.value));
         return perform(async () => {
             try {
+                status.textContent = "Changing Doom volume…";
                 await requireLinux().setMix(mix);
                 await refreshLinux();
                 status.textContent = "Doom volume updated";
