@@ -24,6 +24,6 @@ tar -xf "$cache/zig-$arch-$os-0.15.2.tar.xz" -C "$work/zig" --strip-components=1
 tar -xf "$cache/doomgeneric.tar.gz" -C "$work/doomgeneric" --strip-components=1
 export LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH=1794396363
 "$root/doom/build_doom_demo.sh" "$work/zig/zig" "$work/doomgeneric" "$iwad" "$work/doom"
-python3 "$here/initramfs.py" "$work/doom" "$work/doom-outer.cpio"
+python3 "$here/initramfs.py" "$work/doom" "$work/doom-outer.cpio" --kit-id "${H3970_KIT_ID:-local}"
 python3 "$root/wince/pack_doom.py" "$kernel/ZIMAGE.BIN" "$kernel/H3970.DTB" "$work/doom-outer.cpio" "$out"
 python3 "$here/manifest.py" "$kernel" "$iwad" "$out" "$work/doom/doom-fb" "$work/doom-outer.cpio"

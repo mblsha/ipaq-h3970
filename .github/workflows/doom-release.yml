@@ -36,6 +36,7 @@ jobs:
       - name: Build Linux and Doom release assets
         env:
           LLVM: '-18'
+          H3970_KIT_ID: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
         run: make release BUILD_DIR="$RUNNER_TEMP/ipaq-build"
       - uses: actions/upload-artifact@v7
         with:

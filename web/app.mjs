@@ -1,7 +1,7 @@
 import {ActiveSync, IPAQ} from "./transport.mjs";
 import {DOCUMENTS, Rapi} from "./rapi.mjs";
 import {dumpRom, MAX_KIT_SIZE, uploadDoom} from "./transfers.mjs";
-import {sha256, sleep} from "./bytes.mjs";
+import {sha256} from "./bytes.mjs";
 import {isLinuxPort, LinuxConsole, LINUX_USB} from "./linux.mjs";
 
 const byId = id => document.getElementById(id);
@@ -16,6 +16,7 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
     download = byId("download");
 
 let transport, rapi, linux, kit, busy = false, romUrl;
+let snapshot, transition, paused = false, watchTimer, retryAt = 0;
 const available = window.isSecureContext && navigator.usb;
 const serial = window.isSecureContext && navigator.serial;
 const kitFiles = ["DOOMUSB.BIN", "DOOMUSB.EXE"];
@@ -29,12 +30,13 @@ function controls() {
     connect.disabled = busy || Boolean(transport || linux) || !available;
     connectLinux.disabled = busy || Boolean(transport || linux) || !serial;
     disconnect.disabled = busy || !(transport || linux);
-    install.disabled = busy || Boolean(linux) || !available || !kit;
+    install.disabled = busy || Boolean(linux || transition) || !available || !kit;
     dump.disabled = busy || !rapi;
     upload.disabled = busy || !rapi || !image.files.length || !launcher.files.length;
     password.disabled = busy || Boolean(transport);
     image.disabled = launcher.disabled = busy;
-    audioOn.disabled = audioOff.disabled = reset.disabled = busy || !linux;
+    audioOn.disabled = audioOff.disabled = busy || !linux || !snapshot;
+    reset.disabled = busy || !linux || !snapshot?.reset;
 }
 
 function reportProgress({stage, done, total}) {
@@ -69,7 +71,7 @@ async function perform(action) {
 async function endConnection(options) {
     const connection = transport;
     const console = linux;
-    transport = rapi = linux = null;
+    transport = rapi = linux = snapshot = null;
     device.textContent = "Disconnected";
     await connection?.close(options);
     await console?.close();
@@ -77,62 +79,111 @@ async function endConnection(options) {
 
 const isWinCe = port => port.vendorId === IPAQ.vendorId && port.productId === IPAQ.productId;
 
-async function openWinCe() {
-    status.textContent = "Select the iPAQ in the USB chooser.";
-    const ports = (await navigator.usb.getDevices()).filter(isWinCe);
-    const port = ports.length === 1 ? ports[0] : await navigator.usb.requestDevice({filters: [IPAQ]});
+function releasedStem() {
+    return "DOOM-" + kit.sha256["DOOMUSB.EXE"].slice(0, 12).toUpperCase();
+}
+
+async function inspectWinCe(client, build) {
+    const names = await client.list();
+    const pairs = [...names].flatMap(([path, entry]) => {
+        if (entry.directory || !entry.size || !/\\DOOM(?:USB|-[A-F0-9]{12})\.EXE$/.test(path)) return [];
+        const bin = names.get(path.replace(/\.EXE$/, ".BIN"));
+        return bin && !bin.directory && bin.size ? [path.slice(DOCUMENTS.length + 1, -4)] : [];
+    });
+    const report = DOCUMENTS + "\\DOOMN3-FAIL.TXT";
+    const entry = names.get(report);
+    const failure = entry && !entry.directory && entry.size <= 256
+        ? new TextDecoder("utf-16le").decode(await client.readAll(report, 256)).replace(/\0+$/, "") : "";
+    const current = kit && pairs.includes(releasedStem());
+    let staged = "No complete Doom kit staged";
+    if (current) staged = "Release files present";
+    else if (pairs.length) staged = "Staged Doom kits " + pairs.length;
+    return {build, staged, failure};
+}
+
+async function openWinCe(port, pass = "") {
     try {
-        transport = await ActiveSync.connect(port, password.value, message => { status.textContent = message; });
+        transport = await ActiveSync.connect(port, pass, message => { status.textContent = message; });
         const client = new Rapi(transport);
         const version = await client.version();
         if (version.major !== 3 || version.minor !== 0 || version.build !== 11171) {
             throw new Error("WinCE build 11171 is required for these H3970 helpers");
         }
+        snapshot = await inspectWinCe(client, version.build);
         rapi = client;
-        device.textContent = "Connected to WinCE build " + version.build;
-        status.textContent = "Ready to transfer";
+        showWinCe();
+        if (transition?.target === "linux") {
+            status.textContent = snapshot.failure && snapshot.failure !== transition.failure
+                ? "Linux launcher reported " + snapshot.failure : "WinCE answered again. Linux boot was not confirmed.";
+        } else {
+            status.textContent = transition ? "Returned to WinCE" : "WinCE connection ready";
+            if (snapshot.failure) status.textContent += " · Last launcher report " + snapshot.failure;
+        }
+        transition = null;
     } catch (error) {
         await endConnection();
         throw error;
-    } finally {
-        password.value = "";
     }
+}
+
+function showWinCe() {
+    device.textContent = "WinCE build " + snapshot.build + " · " + snapshot.staged;
+}
+
+async function refreshLinux() {
+    snapshot = await linux.snapshot();
+    const kitLabel = snapshot.kit === "unknown" ? "" : " " + snapshot.kit;
+    const audio = {off: "Muted", on: "Audio on", effects: "Effects only", music: "Music only"};
+    device.textContent = "H3970 Linux" + kitLabel + " · Doom " + snapshot.doom +
+        (snapshot.doom === "running" ? " · " + audio[snapshot.audio] : "");
 }
 
 async function openLinux(port) {
+    linux = await LinuxConsole.connect(port);
     try {
-        linux = await LinuxConsole.connect(port);
+        await refreshLinux();
     } catch (error) {
-        // The cold image briefly disconnects its CDC gadget during startup.
-        const deadline = performance.now() + 6000;
-        do {
-            status.textContent = "Waiting for Linux USB to reconnect…";
-            await sleep(650);
-            const ports = (await serial.getPorts()).filter(isLinuxPort);
-            if (ports.length === 1) {
-                try {
-                    linux = await LinuxConsole.connect(ports[0]);
-                    break;
-                } catch {
-                    // Wait for the re-enumerated port to finish starting.
-                }
-            }
-        } while (performance.now() < deadline);
-        if (!linux) throw new Error(error.message + ". Reconnect the USB cable, then choose Connect Linux again.");
+        await endConnection();
+        throw error;
     }
-    device.textContent = "Connected to H3970 Linux";
-    status.textContent = "Doom controls are ready";
+    if (transition?.target === "linux" && snapshot.kit !== "unknown" && transition.kit !== snapshot.kit) {
+        status.textContent = "Linux answered with a different kit than requested.";
+    } else if (transition?.target === "wince") {
+        status.textContent = "Linux still answers on the previous boot. WinCE reset was not confirmed.";
+    } else {
+        status.textContent = "Linux connection ready";
+    }
+    transition = null;
 }
 
-connect.addEventListener("click", () => perform(openWinCe));
+async function chooseWinCe() {
+    const ports = (await navigator.usb.getDevices()).filter(isWinCe);
+    if (ports.length === 1) return ports[0];
+    status.textContent = "Select the iPAQ in the USB chooser.";
+    return navigator.usb.requestDevice({filters: [IPAQ]});
+}
+
+async function connectWithPassword() {
+    const pass = password.value;
+    password.value = "";
+    await openWinCe(await chooseWinCe(), pass);
+}
+
+connect.addEventListener("click", () => perform(async () => {
+    paused = false;
+    await connectWithPassword();
+}));
 
 connectLinux.addEventListener("click", () => perform(async () => {
+    paused = false;
     const ports = (await serial.getPorts()).filter(isLinuxPort);
     const port = ports.length === 1 ? ports[0] : await serial.requestPort({filters: [LINUX_USB]});
     await openLinux(port);
 }));
 
 disconnect.addEventListener("click", () => perform(async () => {
+    paused = true;
+    transition = null;
     await endConnection();
     status.textContent = "USB session closed";
 }));
@@ -172,59 +223,57 @@ async function fetchReleasedFile(name) {
 }
 
 install.addEventListener("click", () => perform(async () => {
-    if (!rapi) await openWinCe();
+    paused = false;
+    if (!rapi) await connectWithPassword();
     hashes.hidden = true;
     status.textContent = "Downloading Doom " + kit.tag + "…";
     const [bin, exe] = await Promise.all(kitFiles.map(fetchReleasedFile));
-    const stem = "DOOM-" + kit.sha256["DOOMUSB.EXE"].slice(0, 12).toUpperCase();
+    const stem = releasedStem();
     await uploadDoom(rapi, bin, exe, reportProgress, stem);
     status.textContent = "Starting Linux Doom…";
-    await rapi.launch(DOCUMENTS + "\\" + stem + ".EXE");
-    let usbError;
+    transition = {target: "linux", kit: kit.tag, failure: snapshot?.failure, deadline: Date.now() + 35000};
+    let acknowledged = false;
     try {
-        await endConnection({boot: true});
+        await rapi.launch(DOCUMENTS + "\\" + stem + ".EXE");
+        acknowledged = true;
     } catch (error) {
-        usbError = error;
-    }
-    status.textContent = "Launcher started. Waiting for the iPAQ to boot Linux…";
-    await sleep(21000);
-    if (serial) {
-        const ports = (await serial.getPorts()).filter(isLinuxPort);
-        if (ports.length === 1) {
-            await openLinux(ports[0]);
-            return;
+        if (!transport?.error && transport?.device.opened) {
+            transition = null;
+            throw error;
         }
+    } finally {
+        if (transition) await endConnection({boot: true}).catch(() => {});
     }
-    const next = "When Doom appears, choose Connect Linux. If it stayed in WinCE, unplug USB and launch " +
-        stem + ".EXE from My Documents.";
-    status.textContent = usbError ? usbError.message + ". " + next : next;
+    status.textContent = acknowledged ? "Waiting for a Linux status reply…" :
+        "Launcher acknowledgment lost. Checking the iPAQ state…";
+    device.textContent = "Booting Linux…";
+    scheduleDiscovery(250);
 }));
 
 for (const [button, enabled] of [[audioOn, true], [audioOff, false]]) {
     button.addEventListener("click", () => perform(async () => {
         status.textContent = "Changing Doom audio…";
         await linux.setAudio(enabled);
+        await refreshLinux();
         status.textContent = enabled ? "Doom audio enabled" : "Doom audio disabled";
     }));
 }
 
 reset.addEventListener("click", () => perform(async () => {
     status.textContent = "Resetting the iPAQ to WinCE…";
-    await linux.reboot();
-    const deadline = performance.now() + 25000;
-    do {
-        if (linux.disconnected && available && (await navigator.usb.getDevices()).some(isWinCe)) {
-            await endConnection();
-            status.textContent = "WinCE is back. Choose Connect WinCE to use the USB tools.";
-            return;
+    transition = {target: "wince", boot: snapshot.boot, deadline: Date.now() + 20000};
+    try {
+        await linux.reboot();
+    } catch (error) {
+        if (!linux.disconnected) {
+            transition = null;
+            throw error;
         }
-        await sleep(400);
-    } while (performance.now() < deadline);
-    const disconnected = linux.disconnected;
+    }
     await endConnection();
-    status.textContent = disconnected
-        ? "Linux disconnected. Once WinCE appears on the iPAQ, choose Connect WinCE."
-        : "No USB switch was detected. Check the iPAQ screen before retrying.";
+    device.textContent = "Returning to WinCE…";
+    status.textContent = "Waiting for a WinCE status reply…";
+    scheduleDiscovery(250);
 }));
 
 async function loadRelease() {
@@ -246,25 +295,104 @@ async function loadRelease() {
     controls();
 }
 
+async function discover() {
+    if (rapi || linux) {
+        if (transport?.error || linux?.disconnected) {
+            await endConnection();
+            status.textContent = "USB session lost. Checking the iPAQ state…";
+            return;
+        }
+        if (rapi) {
+            snapshot = await inspectWinCe(rapi, snapshot.build);
+            showWinCe();
+        } else {
+            await refreshLinux();
+        }
+        return;
+    }
+    const [winDevices, serialPorts] = await Promise.all([
+        available ? navigator.usb.getDevices() : [],
+        serial ? serial.getPorts() : [],
+    ]);
+    const candidates = [
+        ...winDevices.filter(isWinCe).map(port => ({mode: "wince", port})),
+        ...serialPorts.filter(isLinuxPort).map(port => ({mode: "linux", port})),
+    ];
+    if (candidates.length > 1) {
+        device.textContent = "Multiple iPAQ interfaces found. Choose a connection.";
+        return;
+    }
+    const selected = candidates[0];
+    if (transition && Date.now() < transition.deadline && selected?.mode !== transition.target) return;
+    if (!selected) {
+        device.textContent = "Disconnected";
+        if (transition) {
+            status.textContent = transition.target === "linux"
+                ? "Linux boot unconfirmed. If Doom appeared, choose Connect Linux."
+                : "WinCE return unconfirmed. If WinCE appeared, choose Connect WinCE.";
+            transition = null;
+        }
+        return;
+    }
+    if (Date.now() < retryAt) return;
+    const label = selected.mode === "wince" ? "WinCE" : "Linux USB";
+    device.textContent = label + " detected · Checking for a reply…";
+    try {
+        if (selected.mode === "wince") await openWinCe(selected.port);
+        else await openLinux(selected.port);
+    } catch (error) {
+        device.textContent = label + " detected · No reply";
+        status.textContent = error.message;
+        retryAt = Date.now() + 4000;
+        if (/ActiveSync password|RAPI password/.test(error.message)) paused = true;
+        if (transition && Date.now() >= transition.deadline) transition = null;
+    }
+}
+
+function scheduleDiscovery(delay = 0) {
+    clearTimeout(watchTimer);
+    if (!available && !serial) return;
+    watchTimer = setTimeout(async () => {
+        if (!paused && !busy) {
+            await perform(async () => {
+                try {
+                    await discover();
+                } catch (error) {
+                    await endConnection();
+                    throw error;
+                }
+            });
+        }
+        scheduleDiscovery(transition ? 500 : 3500);
+    }, delay);
+}
+
+function deviceChanged() {
+    retryAt = 0;
+    scheduleDiscovery();
+}
+
 image.addEventListener("change", controls);
 launcher.addEventListener("change", controls);
 if (available) {
+    navigator.usb.addEventListener("connect", deviceChanged);
     navigator.usb.addEventListener("disconnect", event => {
-        if (event.device === transport?.device) {
-            endConnection().finally(controls);
-            status.textContent = "iPAQ disconnected";
-        }
+        if (event.device === transport?.device) transport.fail(new Error("WinCE USB disconnected"));
+        deviceChanged();
     });
-} else {
-    status.textContent = "Open this page in a WebUSB-capable browser over HTTPS or localhost.";
 }
 if (serial) {
+    serial.addEventListener("connect", deviceChanged);
     serial.addEventListener("disconnect", event => {
-        if (!busy && (event.port ?? event.target) === linux?.port) {
-            endConnection().finally(controls);
-            status.textContent = "Linux USB disconnected";
-        }
+        if ((event.port ?? event.target) === linux?.port) linux.disconnected = true;
+        deviceChanged();
     });
 }
+if (!available && !serial) {
+    status.textContent = "Open this page in a WebUSB-capable browser over HTTPS or localhost.";
+}
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") deviceChanged();
+});
 controls();
-loadRelease();
+loadRelease().finally(() => scheduleDiscovery());

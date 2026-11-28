@@ -17,10 +17,12 @@ serial session using the dock.
   WinCE USB connection if prompted. The page selects a published kit,
   verifies the download and WinCE read-back, and starts the RAM launcher.
 - When Doom appears, choose **Connect Linux** and grant Web Serial access
-  on the same cable. **Enable audio** and **Disable audio** restart the demo
-  when the setting changes. **Reset to WinCE** reboots to stock WinCE and
-  may show the Welcome screen. If Linux USB stops responding, reconnect
-  the cable and choose **Connect Linux** again.
+  on the same cable if Chromium requests permission. The page remembers
+  the connection while it is open and reads live state on reload or
+  reconnect when Chromium has permission. **Enable audio** and **Disable
+  audio** restart the demo when the setting changes. **Reset to WinCE**
+  reboots to stock WinCE and may show the Welcome screen. If Linux USB
+  stops responding, reconnect the cable and choose **Connect Linux** again.
 - Use **Connect WinCE** for **Dump ROM** or to stage a different kit.
   The ROM image is saved by the browser on your computer.
 

@@ -4,6 +4,7 @@ import argparse
 import gzip
 from io import BytesIO
 from pathlib import Path
+import re
 import stat
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,12 +35,17 @@ def main():
     parser.add_argument("doom", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--warm", action="store_true")
+    parser.add_argument("--kit-id", default="local")
     args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9.+-]{1,64}", args.kit_id):
+        parser.error("invalid kit identifier")
     linux = ROOT / "linux"
     inner = newc([
         ("doom", stat.S_IFDIR | 0o755, b""),
+        ("doom/kit-id", stat.S_IFREG | 0o644, (args.kit_id + "\n").encode("ascii")),
         file("doom/init", linux / "doom-init.sh", 0o755),
         file("doom/usb-console", linux / "usb-console.sh", 0o755),
+        file("doom/device-status", linux / "doom-status.sh", 0o755),
         file("doom/doom-fb", args.doom / "doom-fb", 0o755),
         file("doom/doomctl", args.doom / "doomctl", 0o755),
         file("doom/doom1.wad", args.doom / "doom1.wad", 0o644),

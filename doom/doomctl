@@ -44,6 +44,25 @@ case "${1:-}" in
         echo 'Doom stopped'
         ;;
     status)
+        if [ "${2:-}" = --machine ]; then
+            if ! running; then
+                printf 'doom=stopped audio=off\n'
+                exit 0
+            fi
+            audio=on
+            for option in nosound nomusic nosfx; do
+                if /bin/busybox grep -aqF -- "-$option" "/proc/$pid/cmdline"; then
+                    case "$option" in
+                        nosound) audio=off ;;
+                        nomusic) audio=effects ;;
+                        nosfx) audio=music ;;
+                    esac
+                    break
+                fi
+            done
+            printf 'doom=running audio=%s\n' "$audio"
+            exit 0
+        fi
         if running; then
             echo "Doom is running as PID $pid"
         else
@@ -52,7 +71,7 @@ case "${1:-}" in
         fi
         ;;
     *)
-        echo 'Usage: doomctl start [--audio|--effects|--music] | stop | status' >&2
+        echo 'Usage: doomctl start [--audio|--effects|--music] | stop | status [--machine]' >&2
         exit 2
         ;;
 esac
