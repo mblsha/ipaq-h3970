@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,6 +98,11 @@ static int start_shell(const struct winsize *size, pid_t *child)
     if (*child < 0)
         fail("fork BusyBox");
     if (*child == 0) {
+        /* A service started with '&' can inherit ignored interactive signals. */
+        struct sigaction defaults = { .sa_handler = SIG_DFL };
+        sigemptyset(&defaults.sa_mask);
+        if (sigaction(SIGINT, &defaults, NULL) < 0 || sigaction(SIGQUIT, &defaults, NULL) < 0)
+            fail("set BusyBox signal handlers");
         if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) < 0 ||
             dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0 ||
             dup2(slave, STDERR_FILENO) < 0)
