@@ -11,5 +11,6 @@ build="$root/.build/h3970-webusb-build"
 CARGO_TARGET_DIR="$build" cargo build --locked --release --target wasm32-unknown-unknown \
     --manifest-path "$here/tcp/Cargo.toml"
 python3 "$root/wince/build_transfers.py" "$out"
+python3 "$root/wince/build_today.py" "$out/today"
 cp "$build/wasm32-unknown-unknown/release/h3970_webusb_tcp.wasm" "$out/tcp.wasm"
 cp "$here/index.html" "$here/style.css" "$here/"*.mjs "$out/"

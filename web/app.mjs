@@ -3,6 +3,7 @@ import {DOCUMENTS, Rapi} from "./rapi.mjs";
 import {dumpRom, MAX_KIT_SIZE, uploadDoom} from "./transfers.mjs";
 import {sha256} from "./bytes.mjs";
 import {isLinuxPort, LinuxConsole, LINUX_USB} from "./linux.mjs";
+import {restoreToday} from "./today.mjs";
 
 const byId = id => document.getElementById(id);
 const connect = byId("connect"), disconnect = byId("disconnect"),
@@ -18,7 +19,8 @@ const connect = byId("connect"), disconnect = byId("disconnect"),
     download = byId("download");
 
 let transport, rapi, linux, kit, busy = false, romUrl;
-let snapshot, transition, paused = false, watchTimer, watchTask, retryAt = 0;
+let snapshot, transition, bootCalibration, paused = false, watchTimer, watchTask, retryAt = 0;
+const calibrationKey = "h3970-boot-calibration";
 const available = window.isSecureContext && navigator.usb;
 const serial = window.isSecureContext && navigator.serial;
 const kitFiles = ["DOOMUSB.BIN", "DOOMUSB.EXE"];
@@ -90,7 +92,7 @@ function releasedStem() {
 }
 
 async function inspectWinCe(client, build) {
-    const names = await client.list();
+    const names = await client.list(6000);
     const pairs = [...names].flatMap(([path, entry]) => {
         if (entry.directory || !entry.size || !/\\DOOM(?:USB|-[A-F0-9]{12})\.EXE$/.test(path)) return [];
         const bin = names.get(path.replace(/\.EXE$/, ".BIN"));
@@ -108,6 +110,7 @@ async function inspectWinCe(client, build) {
 }
 
 async function openWinCe(port, pass = "") {
+    let restore;
     try {
         transport = await ActiveSync.connect(port, pass, message => { status.textContent = message; });
         const client = new Rapi(transport);
@@ -124,11 +127,25 @@ async function openWinCe(port, pass = "") {
         } else {
             status.textContent = transition ? "Returned to WinCE" : "WinCE connection ready";
             if (snapshot.failure) status.textContent += " · Last launcher report " + snapshot.failure;
+            if (transition?.target === "wince") restore = transition.calibration ?? {};
         }
         transition = null;
     } catch (error) {
         await endConnection();
         throw error;
+    }
+    if (restore) {
+        if (restore.serial && restore.serial !== port.serialNumber) {
+            status.textContent = "WinCE returned on a different iPAQ. Complete setup on the handheld.";
+            return;
+        }
+        status.textContent = restore.value ? "Restoring calibration and opening WinCE Today…" : "Checking WinCE setup…";
+        try {
+            await restoreToday(rapi, restore.value);
+            status.textContent = "WinCE Today is ready";
+        } catch (error) {
+            status.textContent = "WinCE is connected. " + error.message;
+        }
     }
 }
 
@@ -186,10 +203,17 @@ async function openLinux(port) {
         await endConnection();
         throw error;
     }
+    if (transition?.target === "linux" && transition.calibration &&
+        snapshot.boot !== "unknown" && transition.kit === snapshot.kit) {
+        bootCalibration = {...transition.calibration, boot: snapshot.boot};
+        try { sessionStorage.setItem(calibrationKey, JSON.stringify(bootCalibration)); } catch {}
+    }
     if (transition?.target === "linux" && snapshot.kit !== "unknown" && transition.kit !== snapshot.kit) {
         status.textContent = "Linux answered with a different kit than requested.";
     } else if (transition?.target === "wince") {
-        status.textContent = "Linux still answers on the previous boot. WinCE reset was not confirmed.";
+        status.textContent = transition.boot !== "unknown" && transition.boot === snapshot.boot
+            ? "Linux still answers on the previous boot. WinCE reset was not confirmed."
+            : "Linux answered. WinCE reset was not confirmed.";
     } else {
         status.textContent = "Linux connection ready";
     }
@@ -270,8 +294,14 @@ install.addEventListener("click", () => perform(async () => {
     const [bin, exe] = await Promise.all(kitFiles.map(fetchReleasedFile));
     const stem = releasedStem();
     await uploadDoom(rapi, bin, exe, reportProgress, stem);
+    let calibration;
+    try {
+        calibration = {value: await rapi.readCalibration(), serial: transport.device.serialNumber};
+    } catch (error) {
+        if (transport.error || !transport.device.opened) throw error;
+    }
     status.textContent = "Starting Linux Doom…";
-    transition = {target: "linux", kit: kit.tag, failure: snapshot?.failure, deadline: Date.now() + 35000};
+    transition = {target: "linux", kit: kit.tag, calibration, failure: snapshot?.failure, deadline: Date.now() + 35000};
     let acknowledged = false;
     try {
         await rapi.launch(DOCUMENTS + "\\" + stem + ".EXE");
@@ -309,7 +339,10 @@ restart.addEventListener("click", () => perform(async () => {
 reset.addEventListener("click", () => perform(async () => {
     const connection = requireLinux();
     status.textContent = "Resetting the iPAQ to WinCE…";
-    transition = {target: "wince", boot: snapshot.boot, deadline: Date.now() + 20000};
+    let saved = bootCalibration;
+    try { saved ??= JSON.parse(sessionStorage.getItem(calibrationKey)); } catch {}
+    const calibration = saved?.boot === snapshot.boot ? saved : undefined;
+    transition = {target: "wince", boot: snapshot.boot, calibration, deadline: Date.now() + 20000};
     try {
         await connection.reboot();
     } catch (error) {
@@ -378,7 +411,7 @@ async function discover() {
             status.textContent = transition.target === "linux"
                 ? "Linux boot unconfirmed. If Doom appeared, choose Connect Linux."
                 : "WinCE return unconfirmed. If WinCE appeared, choose Connect WinCE.";
-            transition = null;
+            if (!transition.calibration || Date.now() >= transition.deadline + 120000) transition = null;
         }
         return;
     }

@@ -280,5 +280,5 @@ export class ActiveSync {
     }
 
     send(bytes) { return this.write(RAPI, bytes); }
-    receive(size) { return this.read(RAPI, size); }
+    receive(size, timeout) { return this.read(RAPI, size, timeout); }
 }

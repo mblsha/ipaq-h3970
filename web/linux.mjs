@@ -142,13 +142,9 @@ export class LinuxConsole {
     }
 
     async setAudio(enabled) {
-        const muted = "read -r pid </tmp/doom.pid && /bin/busybox grep -aqF -- -nosound \"/proc/$pid/cmdline\"";
-        const matches = enabled ? "! ( " + muted + " )" : "( " + muted + " )";
-        await this.command("if /doom/doomctl status >/dev/null && " + matches +
-            "; then :; else /doom/doomctl stop && /doom/doomctl start " +
-            (enabled ? "--audio" : "0") + "; fi");
-        await sleep(400);
-        await this.command("/doom/doomctl status >/dev/null && " + matches);
+        const audio = enabled ? "on" : "off";
+        const state = await this.snapshot();
+        if (state.doom !== "running" || state.audio !== audio) await this.restartDemo(audio);
     }
 
     async reboot() {
@@ -163,8 +159,8 @@ export class LinuxConsole {
         await this.command("/bin/busybox sync && { ( /bin/busybox sleep 1; /bin/busybox reboot -f ) </dev/null >/dev/null 2>&1 & }");
     }
 
-    async restartDemo() {
-        const {audio} = await this.snapshot();
+    async restartDemo(audio) {
+        audio ??= (await this.snapshot()).audio;
         const option = {on: "--audio", off: "0", effects: "--effects", music: "--music"}[audio];
         await this.command("/doom/doomctl stop && /doom/doomctl start " + option);
         await sleep(400);

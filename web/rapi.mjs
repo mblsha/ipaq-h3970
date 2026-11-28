@@ -37,13 +37,13 @@ export class Rapi {
         this.transport = transport;
     }
 
-    async call(command, args = new Uint8Array()) {
+    async call(command, args = new Uint8Array(), timeout) {
         let reply;
         try {
             await this.transport.send(join(words(4 + args.length, command), args));
-            const size = new Reply(await this.transport.receive(4)).integer();
+            const size = new Reply(await this.transport.receive(4, timeout)).integer();
             if (size < 4 || size > MAX_REPLY) throw new Error("Invalid RAPI reply size");
-            reply = new Reply(await this.transport.receive(size));
+            reply = new Reply(await this.transport.receive(size, timeout));
         } catch (error) {
             this.transport.fail(error);
             throw error;
@@ -66,8 +66,46 @@ export class Rapi {
         return {major: version.integer(), minor: version.integer(), build: version.integer()};
     }
 
-    async list() {
-        const reply = await this.call(0x09, join(string(DOCUMENTS + "\\*"), words(0x00a1)));
+    async readCalibration() {
+        function registryResult(reply, name) {
+            reply.integer();
+            const status = reply.integer();
+            if (status) throw new WinCeError(name, status);
+        }
+        function optionalValue(reply) {
+            if (!reply.integer()) return null;
+            const size = reply.integer();
+            if (reply.integer() !== 1) throw new Error("Unexpected WinCE registry reply");
+            return reply.take(size);
+        }
+        const open = await this.call(0x1e, join(words(0x80000002), string("HARDWARE\\DEVICEMAP\\TOUCH")));
+        registryResult(open, "CeRegOpenKeyEx");
+        const key = open.integer();
+        try {
+            const capacity = 256;
+            const query = join(words(key), optional("CalibrationData"),
+                words(0, 1, 4, 0, 1, capacity, 0, 1, 4, 1, capacity));
+            const reply = await this.call(0x26, query);
+            registryResult(reply, "CeRegQueryValueEx");
+            const type = optionalValue(reply), data = optionalValue(reply), size = optionalValue(reply);
+            if (!type || !data || !size || type.length !== 4 || size.length !== 4 ||
+                new Reply(type).integer() !== 1 || new Reply(size).integer() !== data.length ||
+                data.length % 2) {
+                throw new Error("Unexpected WinCE calibration value");
+            }
+            const value = new TextDecoder("utf-16le", {fatal: true}).decode(data).replace(/\0+$/, "");
+            if (!/^\s*-?[0-9]+(?:[,\s]+-?[0-9]+){9}\s*$/.test(value) ||
+                value.length < 11 || value.length >= 95) {
+                throw new Error("WinCE did not report five valid touch calibration points");
+            }
+            return value;
+        } finally {
+            await this.call(0x21, words(key));
+        }
+    }
+
+    async list(timeout) {
+        const reply = await this.call(0x09, join(string(DOCUMENTS + "\\*"), words(0x00a1)), timeout);
         const count = reply.integer();
         if (count > Math.floor(reply.remaining / 12)) throw new Error("Invalid WinCE directory listing");
         const names = new Map();
